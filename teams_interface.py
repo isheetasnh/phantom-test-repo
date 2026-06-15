@@ -44,6 +44,13 @@ MCP_TOKEN_PATH = "/dev/shm/mcp-token"
 GRAPH_BASE_URL = os.environ.get(
     "MICROSOFT_GRAPH_BASE_URL", "https://graph.microsoft.com/v1.0"
 )
+# Microsoft Graph occasionally returns transient gateway errors (502/503/504),
+# throttles with 429, or drops the connection (status 0 from urllib). Retrying a
+# couple of times with backoff turns those one-off blips into a slight delay
+# instead of a discarded poll cycle.
+GRAPH_TRANSIENT_STATUSES = frozenset({0, 429, 502, 503, 504})
+GRAPH_MAX_RETRIES = int(os.environ.get("MICROSOFT_GRAPH_MAX_RETRIES", "3"))
+GRAPH_RETRY_BACKOFF = float(os.environ.get("MICROSOFT_GRAPH_RETRY_BACKOFF", "1.5"))
 TOKEN_BASE_URL = os.environ.get(
     "MICROSOFT_LOGIN_BASE_URL", "https://login.microsoftonline.com"
 )
@@ -450,6 +457,33 @@ def get_access_token(
     )
 
 
+def _should_retry_graph(method: str, status: int, attempt: int) -> bool:
+    """Decide whether a transient Graph failure is worth retrying.
+
+    Idempotent reads (GET/HEAD) are retried for any transient status. For
+    non-idempotent verbs we only retry on 429, which means the request was
+    throttled and never processed, so a retry cannot double-apply the write.
+    """
+    if attempt >= GRAPH_MAX_RETRIES:
+        return False
+    if status not in GRAPH_TRANSIENT_STATUSES:
+        return False
+    if method.upper() in ("GET", "HEAD"):
+        return True
+    return status == 429
+
+
+def _graph_retry_delay(headers: dict[str, str], attempt: int) -> float:
+    """Backoff for the next retry, honoring a Retry-After header when present."""
+    retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            pass
+    return GRAPH_RETRY_BACKOFF * (2**attempt)
+
+
 def graph_request(
     method: str,
     path_or_url: str,
@@ -475,16 +509,38 @@ def graph_request(
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            return resp.status, _decode_json(raw), dict(resp.headers)
-    except urllib.error.HTTPError as e:
-        raw = e.read()
-        return e.code, _decode_json(raw), dict(e.headers or {})
-    except urllib.error.URLError as e:
-        return 0, {"error": "connection_failed", "detail": str(e.reason)}, {}
+    attempt = 0
+    while True:
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, _decode_json(resp.read()), dict(resp.headers)
+        except urllib.error.HTTPError as e:
+            status, payload, resp_headers = (
+                e.code,
+                _decode_json(e.read()),
+                dict(e.headers or {}),
+            )
+        except urllib.error.URLError as e:
+            status, payload, resp_headers = (
+                0,
+                {"error": "connection_failed", "detail": str(e.reason)},
+                {},
+            )
+
+        if not _should_retry_graph(method, status, attempt):
+            return status, payload, resp_headers
+
+        delay = _graph_retry_delay(resp_headers, attempt)
+        print(
+            f"Microsoft Graph {method} {path_or_url} returned {status}; "
+            f"retrying in {delay:.1f}s "
+            f"(attempt {attempt + 1}/{GRAPH_MAX_RETRIES})",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(delay)
+        attempt += 1
 
 
 def graph_request_bytes(

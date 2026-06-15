@@ -30,6 +30,7 @@ try:
         TeamsConfigError,
         TeamsDestination,
         TeamsInterface,
+        message_with_file_links,
         normalize_reaction_type,
         reaction_type_from_text,
     )
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover - supports direct script execution
         TeamsConfigError,
         TeamsDestination,
         TeamsInterface,
+        message_with_file_links,
         normalize_reaction_type,
         reaction_type_from_text,
     )
@@ -226,37 +228,117 @@ def _attachment_context(message: dict[str, Any]) -> str:
     return "\nAttachments:\n" + "\n".join(entries)
 
 
-def _reaction_emoji(message: dict[str, Any]) -> str:
-    audio_suffixes = {
-        ".mp3",
-        ".wav",
-        ".m4a",
-        ".aac",
-        ".ogg",
-        ".oga",
-        ".webm",
-        ".mp4",
-        ".mpeg",
-    }
+AUDIO_SUFFIXES = {
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".aac",
+    ".ogg",
+    ".oga",
+    ".webm",
+    ".mp4",
+    ".mpeg",
+}
 
+
+def _attachment_content_type(item: dict[str, Any]) -> str:
+    return str(
+        item.get("content_type")
+        or item.get("contentType")
+        or item.get("mimetype")
+        or ""
+    )
+
+
+def _attachment_url(item: dict[str, Any]) -> str:
+    return str(
+        item.get("web_url")
+        or item.get("webUrl")
+        or item.get("content_url")
+        or item.get("contentUrl")
+        or ""
+    )
+
+
+def _is_audio_attachment(item: dict[str, Any]) -> bool:
+    """True if an attachment looks like an audio/voice file."""
+    if _attachment_content_type(item).lower().startswith("audio/"):
+        return True
+    name = str(item.get("name") or item.get("title") or "")
+    url = _attachment_url(item)
+    suffix = (Path(name).suffix or Path(url).suffix).lower()
+    return suffix in AUDIO_SUFFIXES
+
+
+def _reaction_emoji(message: dict[str, Any]) -> str:
     for item in _attachment_items(message):
-        content_type = str(
-            item.get("content_type") or item.get("contentType") or item.get("mimetype") or ""
-        )
-        if content_type.lower().startswith("audio/"):
-            return "🎵"
-        name = str(item.get("name") or item.get("title") or "")
-        url = str(
-            item.get("web_url")
-            or item.get("webUrl")
-            or item.get("content_url")
-            or item.get("contentUrl")
-            or ""
-        )
-        suffix = (Path(name).suffix or Path(url).suffix).lower()
-        if suffix in audio_suffixes:
+        if _is_audio_attachment(item):
             return "🎵"
     return "✅"
+
+
+def _audio_attachments(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return audio/voice attachments on a message with download identifiers."""
+    audio: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in _attachment_items(message):
+        if not _is_audio_attachment(item):
+            continue
+        name = (
+            str(item.get("name") or item.get("title") or "voice message").strip()
+            or "voice message"
+        )
+        drive_id = str(item.get("drive_id") or item.get("driveId") or "").strip()
+        item_id = str(item.get("id") or item.get("fileId") or "").strip()
+        url = _attachment_url(item)
+        key = (item_id or name, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        audio.append(
+            {
+                "name": name,
+                "content_type": _attachment_content_type(item) or "audio/*",
+                "drive_id": drive_id,
+                "item_id": item_id,
+                "url": url,
+            }
+        )
+    return audio
+
+
+def _audio_transcription_context(
+    message: dict[str, Any],
+    *,
+    config_path: Path = CONFIG_PATH,
+) -> str:
+    """Build a prompt block telling Claude to transcribe incoming voice notes.
+
+    Teams audio files are SharePoint/OneDrive drive items that require an
+    authenticated download, so we hand Claude the exact ``download`` command
+    (drive id + item id) rather than a bare URL it cannot fetch on its own.
+    """
+    audio_files = _audio_attachments(message)
+    if not audio_files:
+        return ""
+
+    cli = f"python teams_interface.py --config-file {shlex.quote(str(config_path))}"
+    lines = [
+        "",
+        "🎤 AUDIO/VOICE MESSAGE — transcribe it before responding!",
+        "Download each audio file, transcribe the speech, then act on the transcript.",
+    ]
+    for af in audio_files:
+        lines.append(f"- Audio file: {af['name']} ({af['content_type']})")
+        if af["drive_id"] and af["item_id"]:
+            lines.append(
+                f"  Download with: {cli} download "
+                f"--drive-id {shlex.quote(af['drive_id'])} "
+                f"--item-id {shlex.quote(af['item_id'])} -o {shlex.quote(af['name'])}"
+            )
+        elif af["url"]:
+            lines.append(f"  Download URL: {af['url']}")
+    return "\n".join(lines) + "\n"
 
 
 def _reply_command(
@@ -290,7 +372,16 @@ You are running as Phantom's Microsoft Teams monitor. The current time is {now}.
 Read this Microsoft Teams message, do the requested work, and return ONLY the text
 that should be posted back to Teams.
 
-Do not call teams_interface.py and do not post to Teams yourself.{thread_note}
+If the user requests a file (PDF, DOCX, XLSX, image, ZIP, etc.):
+
+1. Generate the file locally.
+2. Save it to disk.
+3. Include a line exactly in this format:
+   Generated file: <absolute_path>
+
+Do not call teams_interface.py and do not post to Teams yourself.
+The Teams monitor will detect the generated file path and upload the file automatically.{thread_note}
+
 Keep the response short unless the user asks for detailed output.
 Do not ask for confirmation when the task is clear.
 
@@ -299,7 +390,7 @@ Time: {message.get('created', 'Unknown')}
 Teams message id: {message.get('id', 'Unknown')}
 Teams thread root id: {message.get('reply_to_id') or message.get('id', 'Unknown')}
 Text: {message.get('text', '')}
-{_attachment_context(message)}
+{_attachment_context(message)}{_audio_transcription_context(message)}
 """
 
 
@@ -368,6 +459,60 @@ def _requested_reaction_emoji(
 def _reaction_target(message: dict[str, Any]) -> Optional[dict[str, Any]]:
     target = message.get("previous_message")
     return target if isinstance(target, dict) and target.get("id") else None
+
+
+def _extract_generated_file_path(text: str) -> Optional[Path]:
+    if not text:
+        return None
+
+    patterns = [
+        re.compile(
+            r"(?im)^\s*(?:saved to|output file|output|file|generated file)\s*[:=]\s*(?P<path>[^\n`]+)"
+        ),
+        re.compile(
+            r"(?P<path>(?:\.?/|~/?|[A-Za-z]:\\)[^\s`]+\.(?:png|jpe?g|gif|webp|pdf|docx?|xlsx?|csv|txt|md|mp4|mov|webm|zip))",
+            re.IGNORECASE,
+        ),
+    ]
+
+    candidates: list[str] = []
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            candidate = str(match.group("path") or "").strip().strip("'\"`")
+            if candidate:
+                candidates.append(candidate)
+
+    for candidate in candidates:
+        candidate_path = Path(candidate).expanduser()
+        if not candidate_path.is_absolute():
+            candidate_path = (REPO_ROOT / candidate_path).resolve()
+        if candidate_path.exists() and candidate_path.is_file():
+            return candidate_path
+    return None
+
+
+def _upload_generated_file_if_any(
+    teams: TeamsInterface,
+    destination: TeamsDestination,
+    response_text: str,
+) -> tuple[str, Optional[dict[str, Any]]]:
+    if destination.kind != "channel":
+        return response_text, None
+
+    generated_path = _extract_generated_file_path(response_text)
+    if not generated_path:
+        return response_text, None
+
+    try:
+        uploaded = teams.upload_file_to_channel(
+            str(generated_path),
+            destination=destination,
+        )
+    except Exception as e:
+        print(f"Teams generated file upload error for {generated_path}: {e}", flush=True)
+        return response_text, None
+
+    return message_with_file_links(response_text, [uploaded]), uploaded
 
 
 def _sender_key(message: dict[str, Any]) -> Optional[str]:
@@ -476,6 +621,16 @@ def run_batched_response(
                 continue
 
             response_text = _clean_claude_text(result.stdout)
+            response_text, uploaded_file = _upload_generated_file_if_any(
+                teams,
+                destination,
+                response_text,
+            )
+            if uploaded_file:
+                print(
+                    f"Uploaded generated Teams file: {uploaded_file.get('name') or generated_path.name}",
+                    flush=True,
+                )
             sent = teams.say(
                 response_text,
                 destination=destination,
