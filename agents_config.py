@@ -1,17 +1,21 @@
 """
 Centralized Agent Configuration
 
-Single-agent configuration for Phantom (Browser Automation Agent).
+Single-agent configuration for Ninja (Browser Automation Agent).
 """
 
 # Agent definitions - single source of truth
 AGENTS = {
-    "phantom": {
-        "name": "Phantom",
+    "ninja": {
+        "name": "Ninja",
         "role": "Browser Automation Agent",
-        "emoji": "👻",
-        "spec": "PHANTOM_SPEC.md",
-        "mentions": ["phantom", "Phantom", "@phantom"],
+        "emoji": "🥷",
+        "spec": "NINJA_SPEC.md",
+        "mentions": [
+            "ninja",
+            "Ninja",
+            "@ninja",
+        ],
     },
 }
 

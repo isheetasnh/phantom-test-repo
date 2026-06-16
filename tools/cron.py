@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-cron — Phantom cron scheduler CLI.
+cron — Ninja cron scheduler CLI.
 
-Schedule recurring agent prompts that Phantom will execute through the
+Schedule recurring agent prompts that Ninja will execute through the
 normal monitor batch path. Schedules evaluate in the customer's local
-timezone (Phantom sets ``/etc/localtime`` from Slack).
+timezone (Ninja sets ``/etc/localtime`` from Slack).
 
 See ``agent-docs/CRON.md`` for the full spec.
 
@@ -31,7 +31,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Allow running as `python tools/cron.py` from src/phantom.
+# Allow running as `python tools/cron.py` from src/ninja.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cron_scheduler as cs  # noqa: E402
@@ -126,7 +126,7 @@ def cmd_trigger(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="cron",
-        description="Phantom cron scheduler — schedule recurring agent prompts.",
+        description="Ninja cron scheduler — schedule recurring agent prompts.",
     )
     sub = p.add_subparsers(dest="command", required=True)
 

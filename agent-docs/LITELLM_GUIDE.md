@@ -87,7 +87,7 @@ print(f"Source:  {cfg['source']}")
 Or from the command line:
 
 ```bash
-cd /workspace/phantom
+cd /workspace/ninja
 python -m utils.litellm_client
 ```
 
@@ -615,7 +615,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -X POST "https://model-gateway.public.beta.myninja.ai/v1/images/generations" \
   -d '{
-    "model": "openai/openai/gpt-image-2",
+    "model": "alias/openai/gpt-image-2.0",
     "prompt": "A sunset",
     "size": "1024x1024"
   }'
@@ -852,7 +852,7 @@ The key building blocks from `litellm_client.py` are:
 Each utility module has a built-in self-test:
 
 ```bash
-cd /workspace/phantom
+cd /workspace/ninja
 
 # Test configuration
 python -m utils.litellm_client

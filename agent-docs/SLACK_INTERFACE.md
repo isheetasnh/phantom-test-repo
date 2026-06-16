@@ -40,7 +40,7 @@ Click the **'Connect'** button in the chat interface to link your Slack workspac
 python slack_interface.py config --set-channel "#your-channel"
 
 # Set your default agent (REQUIRED for 'say' command)
-python slack_interface.py config --set-agent phantom
+python slack_interface.py config --set-agent ninja
 ```
 
 ### 3. Send Messages
@@ -70,16 +70,16 @@ python slack_interface.py upload report.pdf -c "#reports" --title "Q4 Report"
 
 The `say` command **requires an agent identity** to be configured first.
 
-| Agent | Role | Emoji | Color |
-|-------|------|-------|-------|
-| `phantom` | Browser Automation Agent | 👻 | Purple |
+| Agent   | Role                      | Emoji | Color  |
+| ------- | ------------------------- | ----- | ------ |
+| `ninja` | Browser Automation Agent  | 🥷    | Purple |
 
 ```bash
 # List all agents
 python slack_interface.py agents
 
 # Configure your agent identity (do this first!)
-python slack_interface.py config --set-agent phantom
+python slack_interface.py config --set-agent ninja
 
 # Then send messages as that agent
 python slack_interface.py say "Sprint planning at 2pm"
@@ -95,7 +95,7 @@ The configuration is stored at `~/.agent_settings.json`:
 {
   "default_channel": "#your-channel",
   "default_channel_id": "C0AAAAMBR1R",
-  "default_agent": "phantom",
+  "default_agent": "ninja",
   "workspace": "YourWorkspace"
 }
 ```
@@ -110,7 +110,7 @@ python slack_interface.py config --set-channel "#your-channel"
 python slack_interface.py config --set-channel "C0AAAAMBR1R"
 
 # Set default agent (REQUIRED before using 'say')
-python slack_interface.py config --set-agent phantom
+python slack_interface.py config --set-agent ninja
 
 # View current config
 python slack_interface.py config
@@ -134,7 +134,7 @@ python slack_interface.py config
 python slack_interface.py config --set-channel "#channel-name"
 
 # Set default agent
-python slack_interface.py config --set-agent phantom
+python slack_interface.py config --set-agent ninja
 ```
 
 ### Messaging with Agents
@@ -251,7 +251,7 @@ if not slack.is_connected:
 slack.say("Hello team!")
 
 # Send with custom username and icon
-slack.say("Hello!", username="Phantom", icon_url="https://example.com/phantom.png")
+slack.say("Hello!", username="Ninja", icon_url="https://example.com/ninja.png")
 ```
 
 ### File Upload Example
@@ -311,8 +311,8 @@ for msg in messages:
 # Send message with custom identity
 result = slack.say(
     "Hello from the API!",
-    username="Phantom",
-    icon_url="https://sites.super.betamyninja.ai/.../phantom.png"
+    username="Ninja",
+    icon_url="https://sites.super.betamyninja.ai/.../ninja.png"
 )
 if result.get('ok'):
     print(f"Message sent! ts={result['ts']}")
@@ -368,7 +368,8 @@ export SLACK_BOT_TOKEN='xoxb-your-bot-token'
 
 ## Token Types & Scopes
 
-### Bot Token (xoxb-*) — ONLY SUPPORTED TYPE
+### Bot Token (xoxb-\*) — ONLY SUPPORTED TYPE
+
 - Acts as the bot/app itself
 - Limited to channels where bot is invited
 - Supports custom username and icon in messages
@@ -376,22 +377,22 @@ export SLACK_BOT_TOKEN='xoxb-your-bot-token'
 
 ### Required Scopes by Feature
 
-| Feature | Required Scopes |
-|---------|-----------------|
-| **Basic Operations** | |
-| List channels | `channels:read` |
-| Read messages | `channels:history` |
-| Send messages | `chat:write` |
-| List users | `users:read` |
-| **File Operations** | |
-| Upload files | `files:write` |
-| Read file info | `files:read` |
-| **Channel Management** | |
-| Join channels | `channels:join` |
-| Create channels | `channels:manage` |
-| **Private Channels** | |
-| List private channels | `groups:read` |
-| Read private messages | `groups:history` |
+| Feature                | Required Scopes    |
+| ---------------------- | ------------------ |
+| **Basic Operations**   |                    |
+| List channels          | `channels:read`    |
+| Read messages          | `channels:history` |
+| Send messages          | `chat:write`       |
+| List users             | `users:read`       |
+| **File Operations**    |                    |
+| Upload files           | `files:write`      |
+| Read file info         | `files:read`       |
+| **Channel Management** |                    |
+| Join channels          | `channels:join`    |
+| Create channels        | `channels:manage`  |
+| **Private Channels**   |                    |
+| List private channels  | `groups:read`      |
+| Read private messages  | `groups:history`   |
 
 ## Troubleshooting
 
@@ -420,17 +421,19 @@ No Slack tokens found. Please connect your Slack workspace first.
 🤖 The 'say' command requires an agent identity.
 
 💡 To configure your agent:
-   python slack_interface.py config --set-agent phantom
+   python slack_interface.py config --set-agent ninja
 ```
 
 **Solution**: Set a default agent:
+
 ```bash
-python slack_interface.py config --set-agent phantom
+python slack_interface.py config --set-agent ninja
 ```
 
 ### "No default channel configured" Error
 
 **Solution**: Set a default channel:
+
 ```bash
 python slack_interface.py config --set-channel "#your-channel"
 ```
@@ -440,6 +443,7 @@ python slack_interface.py config --set-channel "#your-channel"
 The channel might be private or the bot isn't a member.
 
 **Solution**:
+
 ```bash
 # Join the channel first
 python slack_interface.py join "#channel-name"
@@ -450,6 +454,7 @@ python slack_interface.py join "#channel-name"
 The token doesn't have required permissions.
 
 **Solution**: Check available scopes:
+
 ```bash
 python slack_interface.py scopes
 ```
@@ -459,6 +464,7 @@ python slack_interface.py scopes
 File uploads require the `files:write` scope.
 
 **Solution**:
+
 1. Go to your Slack app settings at https://api.slack.com/apps
 2. Navigate to "OAuth & Permissions"
 3. Add `files:write` to Bot Token Scopes
@@ -475,13 +481,13 @@ File uploads require the `files:write` scope.
 python slack_interface.py config --set-channel "#your-channel"
 
 # 3. Set default agent
-python slack_interface.py config --set-agent phantom
+python slack_interface.py config --set-agent ninja
 
 # 4. Verify setup
 python slack_interface.py config
 
 # 5. Test messaging
-python slack_interface.py say "👻 Phantom is online and ready!"
+python slack_interface.py say "🥷 Ninja is online and ready!"
 ```
 
 ### Multi-Agent Communication
@@ -489,9 +495,9 @@ python slack_interface.py say "👻 Phantom is online and ready!"
 Each agent session should configure its own identity:
 
 ```bash
-# Phantom's session
-python slack_interface.py config --set-agent phantom
-python slack_interface.py say "👻 Task complete - search results posted"
+# Ninja's session
+python slack_interface.py config --set-agent ninja
+python slack_interface.py say "🥷 Task complete - search results posted"
 ```
 
 ### File Upload Workflow
@@ -529,24 +535,24 @@ for msg in reversed(messages):
 
 ### SlackInterface Class
 
-| Method | Description |
-|--------|-------------|
-| `say(message, channel, thread_ts, username, icon_emoji, icon_url)` | Send a message |
-| `upload_file(file_path, channel, title, comment, thread_ts)` | Upload a file |
-| `get_history(channel, limit)` | Get channel message history |
-| `list_channels(types)` | List all channels |
-| `list_users()` | List all users |
-| `join_channel(channel)` | Join a channel |
-| `create_channel(name, is_private)` | Create a new channel |
-| `set_default_channel(channel)` | Set default channel |
-| `get_scopes()` | Get available OAuth scopes |
+| Method                                                             | Description                 |
+| ------------------------------------------------------------------ | --------------------------- |
+| `say(message, channel, thread_ts, username, icon_emoji, icon_url)` | Send a message              |
+| `upload_file(file_path, channel, title, comment, thread_ts)`       | Upload a file               |
+| `get_history(channel, limit)`                                      | Get channel message history |
+| `list_channels(types)`                                             | List all channels           |
+| `list_users()`                                                     | List all users              |
+| `join_channel(channel)`                                            | Join a channel              |
+| `create_channel(name, is_private)`                                 | Create a new channel        |
+| `set_default_channel(channel)`                                     | Set default channel         |
+| `get_scopes()`                                                     | Get available OAuth scopes  |
 
 ### Properties
 
-| Property | Description |
-|----------|-------------|
-| `is_connected` | Boolean - True if tokens are available |
-| `default_channel` | Default channel ID or name |
+| Property               | Description                                  |
+| ---------------------- | -------------------------------------------- |
+| `is_connected`         | Boolean - True if tokens are available       |
+| `default_channel`      | Default channel ID or name                   |
 | `default_channel_name` | Default channel name (e.g., "#your-channel") |
 
 ## License

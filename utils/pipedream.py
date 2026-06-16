@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-utils/pipedream.py — Pipedream Connect SDK wrapper for Phantom.
+utils/pipedream.py — Pipedream Connect SDK wrapper for Ninja.
 
 Reads credentials from ``~/.agent_settings.json["pipedream"]`` (populated
 by ``slack_interface.py`` at startup) and exposes a thin, typed wrapper
@@ -118,7 +118,7 @@ class PipedreamClient:
         if creds is None:
             raise RuntimeError(
                 "Pipedream credentials not found in ~/.agent_settings.json.\n"
-                "Run phantom at least once so slack_interface.py downloads "
+                "Run ninja at least once so slack_interface.py downloads "
                 "them from S3, or set the credentials manually."
             )
 
@@ -523,7 +523,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     parser = argparse.ArgumentParser(
         prog="python -m utils.pipedream",
-        description="Pipedream Connect CLI for Phantom",
+        description="Pipedream Connect CLI for Ninja",
     )
     sub = parser.add_subparsers(dest="cmd")
 

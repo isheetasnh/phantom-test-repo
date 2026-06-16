@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — Setup script for Phantom browser automation agent
+# install.sh — Setup script for Ninja browser automation agent
 #
 # Usage:
 #   ./install.sh --channel "#my-channel" --channel-id "C0AAAAMBR1R"
@@ -7,52 +7,53 @@
 # What this does:
 #   1. Installs Python dependencies (requirements.txt)
 #   2. Creates the logs directory
-#   3. Configures Teams channel (agent is always 'phantom')
-#   4. Installs and enables phantom-sync.service, phantom.service, phantom-monitor.service, phantom-dashboard.service, and phantom-integrations.service
+#   3. Configures Slack channel (agent is always 'ninja')
+#   4. Installs and enables ninja-sync.service, ninja.service, ninja-monitor.service, ninja-dashboard.service, and ninja-integrations.service
 #
 # Prerequisites (must be provided manually — not handled by this script):
-#   - s3_config.json at repo root or /root/  (AWS credentials for Teams S3 cache)
+#   - s3_config.json at repo root or /root/  (AWS credentials for Slack S3 cache)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Parse arguments --------------------------------------------------------
-TEAMS_ID=""
-CHANNEL_ID=""
-Teams_AGENT="phantom"  # always phantom — only one agent in this repo
+SLACK_CHANNEL=""
+SLACK_CHANNEL_ID=""
+SLACK_WORKSPACE_ID=""
+SLACK_AGENT="ninja"  # always ninja — only one agent in this repo
 
 usage() {
     echo "Usage: $0 --channel CHANNEL --channel-id CHANNEL_ID [--workspace-id WORKSPACE_ID]"
     echo ""
     echo "Options:"
-    echo "  --teams-id TEAMS_ID          Teams ID (required, e.g. 'T0A9Q27KD1T')"
-    echo "  --channel-id CHANNEL_ID      Teams channel ID (required, e.g. 'C0AAAAMBR1R')"
-    # echo "  --workspace-id WORKSPACE_ID  Teams workspace/team ID (optional, e.g. 'T0A9Q27KD1T')"
+    echo "  --channel CHANNEL            Slack channel name (required, e.g. '#my-channel')"
+    echo "  --channel-id CHANNEL_ID      Slack channel ID (required, e.g. 'C0AAAAMBR1R')"
+    echo "  --workspace-id WORKSPACE_ID  Slack workspace/team ID (optional, e.g. 'T0A9Q27KD1T')"
     echo "  --help                       Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 --teams-id 'T0A9Q27KD1T' --channel-id 'C0AAAAMBR1R'"
-    echo "  $0 --teams-id 'T0A9Q27KD1T' --channel-id 'C0AAAAMBR1R' --workspace-id 'T0A9Q27KD1T'"
+    echo "  $0 --channel '#my-channel' --channel-id 'C0AAAAMBR1R'"
+    echo "  $0 --channel '#my-channel' --channel-id 'C0AAAAMBR1R' --workspace-id 'T0A9Q27KD1T'"
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --teams-id)     TEAMS_ID="$2"; shift 2 ;;
-        --channel-id)   CHANNEL_ID="$2"; shift 2 ;;
-        # --workspace-id) WORKSPACE_ID="$2"; shift 2 ;;
+        --channel)      SLACK_CHANNEL="$2"; shift 2 ;;
+        --channel-id)   SLACK_CHANNEL_ID="$2"; shift 2 ;;
+        --workspace-id) SLACK_WORKSPACE_ID="$2"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unknown option: $1"; usage; exit 1 ;;
     esac
 done
 
-if [[ -z "$TEAMS_ID" || -z "$CHANNEL_ID" ]]; then
+if [[ -z "$SLACK_CHANNEL" || -z "$SLACK_CHANNEL_ID" ]]; then
     echo "ERROR: --channel and --channel-id are required"
     usage
     exit 1
 fi
 
-echo "=== Phantom Browser Automation — Setup ==="
+echo "=== Ninja Browser Automation — Setup ==="
 echo ""
 
 # --- 1. Python dependencies -------------------------------------------------
@@ -60,13 +61,13 @@ echo "▶ Installing Python dependencies..."
 pip install -q -r "$SCRIPT_DIR/requirements.txt"
 echo "  ✓ Python packages installed"
 
-# Ensure the phantom package is importable by adding its parent to PYTHONPATH
-PHANTOM_PARENT="$(cd "$SCRIPT_DIR/.." && pwd)"
-if ! grep -q "$PHANTOM_PARENT" /etc/environment 2>/dev/null; then
-    echo "PYTHONPATH=\"${PHANTOM_PARENT}:\${PYTHONPATH:-}\"" >> /etc/environment
+# Ensure the ninja package is importable by adding its parent to PYTHONPATH
+NINJA_PARENT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if ! grep -q "$NINJA_PARENT" /etc/environment 2>/dev/null; then
+    echo "PYTHONPATH=\"${NINJA_PARENT}:\${PYTHONPATH:-}\"" >> /etc/environment
 fi
-export PYTHONPATH="${PHANTOM_PARENT}:${PYTHONPATH:-}"
-echo "  ✓ PYTHONPATH configured (${PHANTOM_PARENT})"
+export PYTHONPATH="${NINJA_PARENT}:${PYTHONPATH:-}"
+echo "  ✓ PYTHONPATH configured (${NINJA_PARENT})"
 
 # --- 1.5. Install `pdx` CLI (Pipedream LLM wrapper) -------------------------
 # `pdx` is a tiny JSON-first CLI that exposes connected Pipedream
@@ -87,18 +88,18 @@ mkdir -p /workspace/logs
 echo "  ✓ Log directory ready (/workspace/logs)"
 
 # --- 2.5. Timezone ----------------------------------------------------------
-# Align the sandbox clock with the operator's Teams timezone so every
-# subsequent log line, cron tick, Teams message, and git commit happens
+# Align the sandbox clock with the operator's Slack timezone so every
+# subsequent log line, cron tick, Slack message, and git commit happens
 # in the human's local time. Non-blocking: we warn and continue on any
 # failure so install never aborts because of a clock-config hiccup.
 #
 # The script lives inside the deployed package
-# (src/phantom/initial_setup_scripts/) so it ships through the CDK
+# (src/ninja/initial_setup_scripts/) so it ships through the CDK
 # PublishStack zip. It used to live at the repo root, where the
 # packaging step skipped it and every deployed agent silently fell
 # back to Etc/UTC.
 echo ""
-echo "▶ Aligning system timezone with Teams user profile..."
+echo "▶ Aligning system timezone with Slack user profile..."
 TZ_SCRIPT="$SCRIPT_DIR/initial_setup_scripts/set_timezone.py"
 if [[ -f "$TZ_SCRIPT" ]]; then
     # Route stdout to /dev/null — we print our own one-line confirmation below.
@@ -113,11 +114,11 @@ else
     echo "  ⚠ ${TZ_SCRIPT} not found — skipping timezone sync."
 fi
 
-# --- 3. Teams configuration — must come before systemd step ----------------
+# --- 3. Slack configuration — must come before systemd step ----------------
 echo ""
-echo "▶ Configuring Teams..."
+echo "▶ Configuring Slack..."
 
-# Verify s3_config.json exists before invoking Teams_interface.py
+# Verify s3_config.json exists before invoking slack_interface.py
 S3_CONFIG_FOUND=false
 for candidate in "/root/s3_config.json" "$SCRIPT_DIR/s3_config.json" "/root/ninja-squad/s3_config.json" "/workspace/ninja-squad/s3_config.json"; do
     if [[ -f "$candidate" ]]; then
@@ -126,36 +127,41 @@ for candidate in "/root/s3_config.json" "$SCRIPT_DIR/s3_config.json" "/root/ninj
     fi
 done
 
-TEAMS_ACCESS_TOKEN=$(grep '^MSTeams=' /dev/shm/mcp-token | sed 's/^MSTeams=//' | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-python "$SCRIPT_DIR/teams_interface.py" config --set-team-id "$TEAMS_ID" --set-channel-id "$CHANNEL_ID" --set-access-token "$TEAMS_ACCESS_TOKEN"
-echo "  ✓ Teams team ID set to: $TEAMS_ID"
-echo "  ✓ Teams channel set to: $CHANNEL_ID"
-echo "  ✓ Teams access token set (${#TEAMS_ACCESS_TOKEN} chars)"
+if [[ "$S3_CONFIG_FOUND" != "true" ]]; then
+    echo "  ✗ s3_config.json not found — cannot configure Slack"
+    echo "    Create s3_config.json (at repo root or /root/) with:"
+    echo "      aws_access_key_id, aws_secret_access_key, bucket_name"
+    echo "    Then re-run: $0 --channel '$SLACK_CHANNEL'"
+    exit 1
+fi
 
-# if [[ -n "$Teams_WORKSPACE_ID" ]]; then
-#     python "$SCRIPT_DIR/Teams_interface.py" config --set-workspace-id "$Teams_WORKSPACE_ID"
-#     echo "  ✓ Teams workspace ID set to: $Teams_WORKSPACE_ID"
-# fi
+python "$SCRIPT_DIR/slack_interface.py" config --set-channel "$SLACK_CHANNEL" --set-channel-id "$SLACK_CHANNEL_ID"
+echo "  ✓ Slack channel set to: $SLACK_CHANNEL"
 
-# python "$SCRIPT_DIR/Teams_interface.py" config --set-agent "$Teams_AGENT"
-# echo "  ✓ Teams agent set to: $Teams_AGENT (phantom)"
+if [[ -n "$SLACK_WORKSPACE_ID" ]]; then
+    python "$SCRIPT_DIR/slack_interface.py" config --set-workspace-id "$SLACK_WORKSPACE_ID"
+    echo "  ✓ Slack workspace ID set to: $SLACK_WORKSPACE_ID"
+fi
+
+python "$SCRIPT_DIR/slack_interface.py" config --set-agent "$SLACK_AGENT"
+echo "  ✓ Slack agent set to: $SLACK_AGENT (ninja)"
 
 # --- 4. Systemd services ----------------------------------------------------
 echo ""
 echo "▶ Installing systemd services..."
-cp "$SCRIPT_DIR/systemd/phantom-sync.service" /etc/systemd/system/phantom-sync.service
-cp "$SCRIPT_DIR/systemd/phantom.service"              /etc/systemd/system/phantom.service
-cp "$SCRIPT_DIR/systemd/phantom-dashboard.service"    /etc/systemd/system/phantom-dashboard.service
-cp "$SCRIPT_DIR/systemd/phantom-integrations.service" /etc/systemd/system/phantom-integrations.service
-cp "$SCRIPT_DIR/systemd/phantom-monitor.service"      /etc/systemd/system/phantom-monitor.service
+cp "$SCRIPT_DIR/systemd/ninja-sync.service" /etc/systemd/system/ninja-sync.service
+cp "$SCRIPT_DIR/systemd/ninja.service"              /etc/systemd/system/ninja.service
+cp "$SCRIPT_DIR/systemd/ninja-monitor.service"      /etc/systemd/system/ninja-monitor.service
+cp "$SCRIPT_DIR/systemd/ninja-dashboard.service"    /etc/systemd/system/ninja-dashboard.service
+cp "$SCRIPT_DIR/systemd/ninja-integrations.service" /etc/systemd/system/ninja-integrations.service
 systemctl daemon-reload
-systemctl enable phantom-sync.service phantom.service phantom-monitor.service phantom-dashboard.service phantom-integrations.service
-systemctl start  phantom-sync.service phantom.service phantom-monitor.service phantom-dashboard.service phantom-integrations.service
-echo "  ✓ phantom-sync.service installed, enabled and started (removes superninja config, syncs workspace to git)"
-echo "  ✓ phantom.service installed and enabled (single work cycle, restarts on failure)"
-echo "  ✓ phantom-monitor.service installed, enabled and started (continuous Teams watcher)"
-echo "  ✓ phantom-dashboard.service installed, enabled and started (port 9000)"
-echo "  ✓ phantom-integrations.service installed, enabled and started (port 9020)"
+systemctl enable ninja-sync.service ninja.service ninja-monitor.service ninja-dashboard.service ninja-integrations.service
+systemctl start  ninja-sync.service ninja.service ninja-monitor.service ninja-dashboard.service ninja-integrations.service
+echo "  ✓ ninja-sync.service installed, enabled and started (removes superninja config, syncs workspace to git)"
+echo "  ✓ ninja.service installed and enabled (single work cycle, restarts on failure — waits for browser)"
+echo "  ✓ ninja-monitor.service installed, enabled and started (continuous Slack watcher)"
+echo "  ✓ ninja-dashboard.service installed, enabled and started (port 9000)"
+echo "  ✓ ninja-integrations.service installed, enabled and started (port 9020)"
 
 # --- 5. VNC password-free configuration ------------------------------------
 echo ""
@@ -176,6 +182,33 @@ if [[ -f "$SUPERVISOR_CONF" ]]; then
     echo "  ✓ x11vnc restarted with new config"
 else
     echo "  ⚠ Supervisor config not found at $SUPERVISOR_CONF — skipping VNC patch"
+fi
+
+# --- 6. Wait for browser server to be ready  --------------------------------------
+# Block auto health check here until the browser is confirmed ready, and fall
+# back to starting it manually if supervisord hasn't done so yet.
+echo ""
+echo "▶ Waiting for browser server to be ready on port 9222..."
+BROWSER_TIMEOUT=60
+BROWSER_READY=false
+for i in $(seq 1 "$BROWSER_TIMEOUT"); do
+    if curl -sf http://localhost:9222/json/version >/dev/null 2>&1; then
+        BROWSER_READY=true
+        echo "  ✓ Browser server ready (${i}s)"
+        break
+    fi
+    sleep 1
+done
+
+if [[ "$BROWSER_READY" == "false" ]]; then
+    echo "  ⚠ Browser not responding after ${BROWSER_TIMEOUT}s — attempting manual start..."
+    python "$SCRIPT_DIR/ninja/browser_server.py" start || true
+    sleep 5
+    if curl -sf http://localhost:9222/json/version >/dev/null 2>&1; then
+        echo "  ✓ Browser started successfully"
+    else
+        echo "  ⚠ Browser could not be started — health check may still fail"
+    fi
 fi
 
 # --- Done -------------------------------------------------------------------

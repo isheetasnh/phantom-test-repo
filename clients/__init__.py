@@ -1,1 +1,1 @@
-"""Phantom service clients."""
+"""Ninja service clients."""
