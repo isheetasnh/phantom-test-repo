@@ -140,7 +140,7 @@ STEALTH_CHECKS_JS = """
 async def _run_audit_async(site: str = None, quick: bool = False) -> dict:
     """Run the stealth audit asynchronously."""
     try:
-        from browser_interface import BrowserInterface
+        from browser.browser_interface import BrowserInterface
     except ImportError:
         return {"error": "Cannot import BrowserInterface. Run from project root."}
 

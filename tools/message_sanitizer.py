@@ -16,8 +16,6 @@ Python API:
 
 import re
 import sys
-import unicodedata
-from pathlib import Path
 
 
 def sanitize(text: str) -> str:

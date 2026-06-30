@@ -38,10 +38,10 @@ import sys
 from typing import Any
 
 import httpx
+from clients.litellm_client import get_config
 from mcp import ClientSession
 from mcp.client.streamable_http import StreamableHTTPTransport, streamable_http_client
 from mcp.types import CallToolResult, InitializedNotification, JSONRPCNotification, Tool
-from utils.litellm_client import get_config
 
 __all__ = [
     "MCPClient",

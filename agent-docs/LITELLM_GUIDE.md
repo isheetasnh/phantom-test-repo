@@ -75,7 +75,7 @@ export LITELLM_BASE_URL="https://different-gateway.example.com"
 ### Verifying Configuration
 
 ```python
-from utils.litellm_client import get_config
+from clients.litellm_client import get_config
 
 cfg = get_config()
 print(f"Gateway: {cfg['base_url']}")
@@ -88,7 +88,7 @@ Or from the command line:
 
 ```bash
 cd /workspace/ninja
-python -m utils.litellm_client
+python -m clients.litellm_client
 ```
 
 ---
@@ -125,7 +125,7 @@ from utils.video import generate_video, submit_video, poll_video, download_video
 from utils.embeddings import embed, embed_batch, cosine_similarity
 
 # Config & models
-from utils.litellm_client import get_config, resolve_model, MODELS
+from clients.litellm_client import get_config, resolve_model, MODELS
 ```
 
 ---
@@ -573,7 +573,7 @@ If you need to make custom API calls beyond what the utilities provide:
 ### Using the Client Helpers
 
 ```python
-from utils.litellm_client import get_headers, api_url, resolve_model
+from clients.litellm_client import get_headers, api_url, resolve_model
 import requests
 
 # Build URL and headers automatically
@@ -807,7 +807,7 @@ If the gateway adds a new endpoint, here's how to create a utility for it:
 """Template for a new utility module."""
 
 import requests
-from utils.litellm_client import get_headers, api_url, resolve_model
+from clients.litellm_client import get_headers, api_url, resolve_model
 
 def my_new_function(param1: str, model: str = "default-model") -> dict:
     """
@@ -855,7 +855,7 @@ Each utility module has a built-in self-test:
 cd /workspace/ninja
 
 # Test configuration
-python -m utils.litellm_client
+python -m clients.litellm_client
 
 # Test chat (fast, ~5s)
 python -m utils.chat

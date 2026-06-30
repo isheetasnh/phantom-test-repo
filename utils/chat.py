@@ -34,7 +34,7 @@ import json
 from typing import Generator
 
 import requests
-from utils.litellm_client import api_url, get_config, get_headers, resolve_model
+from clients.litellm_client import api_url, get_config, get_headers, resolve_model
 
 
 def chat_messages(

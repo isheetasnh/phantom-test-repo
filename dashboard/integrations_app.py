@@ -44,24 +44,18 @@ CORS(app)
 AGENT_SETTINGS = Path.home() / ".agent_settings.json"
 
 # ─── Pipedream client (lazy, cached) ─────────────────────────────────────────
-_pd = None
-_pd_lock = threading.Lock()
-_pd_err: Optional[str] = None
+from functools import cache
 
 
+@cache
 def _client():
-    global _pd, _pd_err
-    with _pd_lock:
-        if _pd:
-            return _pd
-        try:
-            from utils.pipedream import PipedreamClient  # type: ignore
+    """Return (PipedreamClient, error_str) — cached on first call."""
+    try:
+        from utils.pipedream import PipedreamClient  # type: ignore
 
-            _pd = PipedreamClient()
-            _pd_err = None
-        except Exception as e:
-            _pd_err = str(e)
-    return _pd
+        return PipedreamClient(), None
+    except Exception as e:
+        return None, str(e)
 
 
 def _settings() -> Dict[str, Any]:
@@ -211,7 +205,7 @@ def _fetch_actions_for_app(app_slug: str) -> List[Dict[str, Any]]:
 
 @app.route("/api/status")
 def api_status():
-    pd = _client()
+    pd, _pd_err = _client()
     s = _settings()
     agent = {
         "team_id": s.get("default_team_id", ""),
@@ -243,19 +237,29 @@ def api_status():
 
 @app.route("/api/apps")
 def api_apps():
-    pd = _client()
+    pd, _pd_err = _client()
     if pd is None:
         return jsonify({"ok": False, "error": _pd_err, "data": []}), 503
     q = request.args.get("q") or None
-    limit = min(int(request.args.get("limit", 60)), 200)
+    limit = min(int(request.args.get("limit", 100)), 250)
     sort_k = request.args.get("sort_key", "featured_weight")
     sort_d = request.args.get("sort_direction", "desc")
+    after = request.args.get("after") or None
     try:
-        apps = pd.list_apps(q=q, limit=limit, sort_key=sort_k, sort_direction=sort_d)
-        # Tag which apps have known GH actions
+        result = pd.list_apps_page(
+            q=q, limit=limit, after=after, sort_key=sort_k, sort_direction=sort_d
+        )
+        apps = result["apps"]
         for a in apps:
             a["has_gh_actions"] = a.get("name_slug") in APP_SLUG_TO_GH
-        return jsonify({"ok": True, "data": apps, "count": len(apps)})
+        return jsonify(
+            {
+                "ok": True,
+                "data": apps,
+                "next_cursor": result["next_cursor"],
+                "total_count": result["total_count"],
+            }
+        )
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "data": []}), 500
 
@@ -270,7 +274,7 @@ def api_app_actions(app_slug: str):
 
 @app.route("/api/accounts")
 def api_accounts():
-    pd = _client()
+    pd, _pd_err = _client()
     if pd is None:
         return jsonify({"ok": False, "error": _pd_err, "data": []}), 503
     try:
@@ -282,7 +286,7 @@ def api_accounts():
 
 @app.route("/api/accounts/<account_id>", methods=["DELETE"])
 def api_delete_account(account_id: str):
-    pd = _client()
+    pd, _pd_err = _client()
     if pd is None:
         return jsonify({"ok": False, "error": _pd_err}), 503
     ok = pd.delete_account(account_id)
@@ -291,7 +295,7 @@ def api_delete_account(account_id: str):
 
 @app.route("/api/connect/token", methods=["POST"])
 def api_connect_token():
-    pd = _client()
+    pd, _pd_err = _client()
     if pd is None:
         return jsonify({"ok": False, "error": _pd_err}), 503
     body = request.get_json(silent=True) or {}
@@ -375,6 +379,7 @@ _HTML = r"""<!DOCTYPE html>
   --border:#2a2d36;--text:#e2e4eb;--muted:#7a7f94;--faint:#4a4f62;
   --purple:#7c3aed;--purple-l:#a78bfa;--purple-d:#6d28d9;
   --green:#22c55e;--yellow:#eab308;--red:#ef4444;--blue:#3b82f6;
+  --icon-bg:#ffffff;
   --r:10px;--font:system-ui,-apple-system,'Segoe UI',sans-serif
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5}
@@ -485,7 +490,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .app-card-top{display:flex;align-items:flex-start;gap:10px}
 .app-icon{
   width:38px;height:38px;border-radius:9px;
-  object-fit:contain;background:var(--s3);flex-shrink:0;
+  object-fit:contain;background:var(--icon-bg);flex-shrink:0;
   border:1px solid var(--border);padding:4px;
 }
 .app-icon-ph{
@@ -744,7 +749,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   <div id="page-apps" class="page">
     <div class="search-wrap">
       <div class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg></div>
-      <input class="search-input" id="app-q" placeholder="Search 3,000+ apps — GitHub, Slack, Notion, Salesforce…" oninput="onSearch(this.value)"/>
+      <input class="search-input" id="app-q" placeholder="" oninput="onSearch(this.value)"/>
     </div>
     <div class="filter-row" id="filter-row">
       <span style="font-size:12px;color:var(--muted)">Filter:</span>
@@ -895,17 +900,53 @@ function updateBadge(n) {
 /* ══════════════════════════════════════════════════════════════════
    Apps page
 ══════════════════════════════════════════════════════════════════ */
+let _nextCursor = null;
+let _currentQ = '';
+
 async function loadApps(q='') {
+  _currentQ = q;
+  _apps = [];
+  _nextCursor = null;
+  _loadingMore = false;
+  if (_scrollObserver) { _scrollObserver.disconnect(); _scrollObserver = null; }
   const ctr = document.getElementById('apps-ctr');
   ctr.innerHTML = '<div class="loading-ctr"><div class="spin"></div></div>';
-  const params = new URLSearchParams({limit:96, sort_key:'featured_weight', sort_direction:'desc'});
+  await _fetchAppsPage(q, null, true);
+}
+
+async function _fetchAppsPage(q, after, replace) {
+  const params = new URLSearchParams({limit:100, sort_key:'featured_weight', sort_direction:'desc'});
   if (q) params.set('q', q);
+  if (after) params.set('after', after);
   try {
     const d = await api('/api/apps?' + params);
-    if (!d.ok) { ctr.innerHTML = err(d.error); return; }
-    _apps = d.data;
+    if (!d.ok) { document.getElementById('apps-ctr').innerHTML = err(d.error); return; }
+    _apps = replace ? d.data : [..._apps, ...d.data];
+    _nextCursor = d.next_cursor || null;
+    if (d.total_count) {
+      const k = Math.floor(d.total_count / 1000) * 1000;
+      document.getElementById('app-q').placeholder = `Search ${k}+ apps…`;
+    }
     renderApps();
-  } catch(e) { ctr.innerHTML = err(e); }
+  } catch(e) { document.getElementById('apps-ctr').innerHTML = err(e); }
+}
+
+let _loadingMore = false;
+let _scrollObserver = null;
+
+function _observeSentinel() {
+  if (_scrollObserver) _scrollObserver.disconnect();
+  const sentinel = document.getElementById('apps-sentinel');
+  if (!sentinel) return;
+  _scrollObserver = new IntersectionObserver(async ([entry]) => {
+    if (!entry.isIntersecting || !_nextCursor || _loadingMore) return;
+    _loadingMore = true;
+    const sentinel = document.getElementById('apps-sentinel');
+    if (sentinel) sentinel.innerHTML = '<div class="loading-ctr" style="padding:16px 0"><div class="spin"></div></div>';
+    await _fetchAppsPage(_currentQ, _nextCursor, false);
+    _loadingMore = false;
+  }, { rootMargin: '200px' });
+  _scrollObserver.observe(sentinel);
 }
 
 function renderApps() {
@@ -920,8 +961,9 @@ function renderApps() {
     ctr.innerHTML = `<div class="empty"><div class="empty-ico">🔍</div><h3>No apps found</h3><p>Try a different search or filter.</p></div>`;
     return;
   }
-  ctr.innerHTML = `<div style="font-size:12px;color:var(--muted);margin-bottom:12px">${list.length} apps</div>
-    <div class="app-grid">${list.map(appCard).join('')}</div>`;
+  const sentinel = _nextCursor ? `<div id="apps-sentinel" style="height:1px"></div>` : '';
+  ctr.innerHTML = `<div class="app-grid">${list.map(appCard).join('')}</div>${sentinel}`;
+  if (_nextCursor) _observeSentinel();
 }
 
 function appCard(a) {

@@ -78,7 +78,7 @@ Examples:
 
 ## Job storage
 
-Jobs live in `.ninja_crons.json` next to `monitor.py`. The file is
+Jobs live in `.ninja_crons.json` next to `processes/monitor.py`. The file is
 **gitignored** — it is per-installation runtime state. Schema:
 
 ```json
@@ -97,14 +97,14 @@ Jobs live in `.ninja_crons.json` next to `monitor.py`. The file is
 
 ## How it executes
 
-1. `ninja-monitor.service` ticks every ~45s and calls
-   `cron_scheduler.get_due_cron_messages()`.
+1. `ninja-monitor.service` ticks every ~60s (60s base + up to 5s random
+   jitter) and calls `cron_scheduler.get_due_cron_messages()`.
 2. For each due job, the monitor calls `claim_cron(id)` which advances
    `next_run_at` **before** the agent runs (restart-safe).
 3. The job is appended to the same `pending_messages` batch as Slack
    mentions, with `type: "cron"`.
 4. The agent answers it like any other message and posts the result
-   using `slack_interface.py say "..."`. The agent has a single
+   using `messaging/slack/interface.py say "..."`. The agent has a single
    configured Slack channel, so no `-c` flag is needed. If the job has
    `thread_ts` set, the agent replies in-thread with `-t <thread_ts>`.
 
@@ -114,7 +114,7 @@ When you receive a batch entry with `type: cron`, treat it as a
 self-directed task, not a user question:
 
 - Execute the `prompt` exactly.
-- Post the result with `python slack_interface.py say "..."`. If the
+- Post the result with `python messaging/slack/interface.py say "..."`. If the
   job has `thread_ts` set, reply in-thread with `-t <thread_ts>`.
   Ninja has only one configured Slack channel, so no `-c` flag is
   needed.

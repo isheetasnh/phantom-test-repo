@@ -117,7 +117,7 @@ browser.stop()
 Captures the full page state in one call. This is your **eyes**.
 
 ```python
-from ninja.observer import observe
+from browser.observer import observe
 
 # Takes a snapshot of the current page
 observation = observe(browser, step=0, screenshot=True)
@@ -167,7 +167,7 @@ observation = observe(browser, step=0, screenshot=True)
 Executes browser actions with **self-healing selectors**.
 
 ```python
-from ninja.actions import execute_action, set_elements, clear_selector_cache
+from browser.actions import execute_action, set_elements, clear_selector_cache
 
 # IMPORTANT: Pass elements from observer before executing actions
 set_elements(observation["interactive_elements"])
@@ -225,7 +225,7 @@ result = execute_action(browser, "wait", {"seconds": 2})
 Pre-built task templates for common operations:
 
 ```python
-from ninja.presets import get_preset_task, list_presets
+from browser.presets import get_preset_task, list_presets
 
 # Get a pre-built task string
 task = get_preset_task("screenshot", url="https://example.com")
@@ -241,7 +241,7 @@ print(list_presets())
 Share the live browser view with humans:
 
 ```python
-from ninja.vnc import get_vnc_url, share_vnc_link, request_human_help
+from browser.vnc import get_vnc_url, share_vnc_link, request_human_help
 
 # Get the public noVNC URL (port 6081, no password, auto-connect)
 url = get_vnc_url()  # https://6080-<sandbox_id>.app.super.<stage>myninja.ai/vnc.html?autoconnect=true
@@ -256,7 +256,7 @@ request_human_help("CAPTCHA detected", page_url="https://example.com/login")
 #### 6. Config (`ninja/config.py`)
 
 ```python
-from ninja.config import NinjaConfig, SCREENSHOTS_DIR, BROWSER_DATA_DIR
+from browser.config import NinjaConfig, SCREENSHOTS_DIR, BROWSER_DATA_DIR
 
 config = NinjaConfig.load()
 # config.model, config.max_steps, config.headless, config.viewport_width, etc.
@@ -285,9 +285,9 @@ Here's the pattern for executing any browser task:
 
 ```python
 from browser_interface import BrowserInterface
-from ninja.observer import observe
-from ninja.actions import execute_action, set_elements, clear_selector_cache
-from ninja.config import NinjaConfig
+from browser.observer import observe
+from browser.actions import execute_action, set_elements, clear_selector_cache
+from browser.config import NinjaConfig
 
 # 1. Connect to persistent browser (already running via browser_server.py)
 browser = BrowserInterface.connect_cdp()
@@ -361,7 +361,7 @@ Watch for yourself repeating the same action. If you've tried the same thing 3 t
 If you hit a CAPTCHA, login wall, or anything you can't automate:
 
 ```python
-from ninja.vnc import request_human_help
+from browser.vnc import request_human_help
 request_human_help("CAPTCHA detected", page_url=browser.url)
 # Then wait or report back
 ```
@@ -391,7 +391,7 @@ The browser server should already be running when you start a task. If `connect_
 with a `ConnectionError`, start the server first:
 
 ```python
-from ninja.browser_server import ensure_running
+from browser.browser_server import ensure_running
 ensure_running()  # Starts browser if not already running
 ```
 
@@ -404,7 +404,7 @@ The browser runs on a virtual display visible via VNC at port 6080 (no password,
 - Demonstrating results
 
 ```python
-from ninja.vnc import get_vnc_url
+from browser.vnc import get_vnc_url
 vnc_url = get_vnc_url()
 ```
 
@@ -418,13 +418,13 @@ The persistent browser is always in **headed mode** and visible on VNC.
 
 ```bash
 # Post as Ninja
-python slack_interface.py say "message"
+python messaging/slack/interface.py say "message"
 
 # Read channel
-python slack_interface.py read -l 50
+python messaging/slack/interface.py read -l 50
 
 # Upload screenshot
-python slack_interface.py upload ninja/screenshots/step_005.png --title "Current page"
+python messaging/slack/interface.py upload ninja/screenshots/step_005.png --title "Current page"
 ```
 
 ### Message Style
@@ -440,14 +440,14 @@ python slack_interface.py upload ninja/screenshots/step_005.png --title "Current
 
 ```bash
 # Use get_vnc_url() for the live browser link
-python slack_interface.py say "🥷 Starting browser task: searching for AI news on Bing.
-🖥️ Watch live: $(python -c 'from ninja.vnc import get_vnc_url; print(get_vnc_url())')"
+python messaging/slack/interface.py say "🥷 Starting browser task: searching for AI news on Bing.
+🖥️ Watch live: $(python -c 'from browser.vnc import get_vnc_url; print(get_vnc_url())')"
 ```
 
 **Task complete:**
 
 ```bash
-python slack_interface.py say "🥷 Done (8 steps). Found top 5 AI news results.
+python messaging/slack/interface.py say "🥷 Done (8 steps). Found top 5 AI news results.
 📎 Screenshot attached."
 ```
 
@@ -455,7 +455,7 @@ python slack_interface.py say "🥷 Done (8 steps). Found top 5 AI news results.
 
 ```bash
 # Or use the request_human_help() helper which includes the VNC link automatically
-python -c "from ninja.vnc import request_human_help; request_human_help('Hit a CAPTCHA on google.com/login', 'https://google.com/login')"
+python -c "from browser.vnc import request_human_help; request_human_help('Hit a CAPTCHA on google.com/login', 'https://google.com/login')"
 ```
 
 #### 7. Stealth (`ninja/stealth.py`)
@@ -584,7 +584,7 @@ Update this after each task with what you learned about the sites you visited.
 | **ninja/actions.py**         | Action execution           | Self-healing selectors, overlay dismissal                                 |
 | **ninja/presets.py**         | Task templates             | Common operations (screenshot, search, extract)                           |
 | **ninja/vnc.py**             | VNC sharing                | Live browser link for humans                                              |
-| **slack_interface.py**         | Communication              | Post updates, upload screenshots                                          |
+| **messaging/slack/interface.py**         | Communication              | Post updates, upload screenshots                                          |
 | **Tavily**                     | Web research               | Search, extract, crawl (text-based, no browser needed)                    |
 | **tools/pdx.py** (`pdx`)       | Connected app integrations | Discover and run Pipedream actions; see `agent-docs/PIPEDREAM_CONNECT.md` |
 | **tools/cron.py**              | Scheduled agent prompts    | Add/list/trigger recurring agent jobs; see `agent-docs/CRON.md`           |

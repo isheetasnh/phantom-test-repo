@@ -5,6 +5,10 @@ All models available through the NinjaTech LiteLLM gateway.
 **Gateway URL**: `https://model-gateway.public.beta.myninja.ai`
 **Auth**: Bearer token from `/root/.claude/settings.json`
 
+> **Model ID note:** IDs like `claude-opus-4-8` are NinjaTech gateway identifiers routed through LiteLLM — they are not necessarily Anthropic public version strings. The gateway handles mapping to the underlying provider model. Prefer the short aliases (`claude-opus`, `claude-sonnet`, `claude-haiku`) for forward compatibility.
+>
+> **Runtime override:** The active model is read from `litellm_selected_model` in `/dev/shm/sandbox_metadata.json` at orchestrator startup. The model actually in use may differ from the catalog default.
+
 ---
 
 ## Chat / Text Models
@@ -164,7 +168,7 @@ These models accept embedding requests via `/v1/embeddings`.
 The utility library supports short aliases. Use `resolve_model()` to convert:
 
 ```python
-from utils.litellm_client import resolve_model
+from clients.litellm_client import resolve_model
 
 resolve_model("claude-opus")    # → "claude-opus-4-8"
 resolve_model("claude-sonnet")  # → "claude-sonnet-4-6"

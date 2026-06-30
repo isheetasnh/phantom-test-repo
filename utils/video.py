@@ -41,7 +41,7 @@ import time
 from pathlib import Path
 
 import requests
-from utils.litellm_client import api_url, get_headers, resolve_model
+from clients.litellm_client import api_url, get_headers, resolve_model
 
 # Valid sizes for video generation
 VALID_SIZES = ["1280x720", "720x1280"]

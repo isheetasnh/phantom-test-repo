@@ -214,6 +214,41 @@ class PipedreamClient:
     # Apps catalog
     # ------------------------------------------------------------------
 
+    def list_apps_page(
+        self,
+        *,
+        q: Optional[str] = None,
+        limit: int = 100,
+        after: Optional[str] = None,
+        sort_key: Optional[str] = None,
+        sort_direction: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch one page of apps from the Pipedream catalog.
+
+        Returns dict with ``apps`` (list) and ``next_cursor`` (str | None).
+        Pass ``next_cursor`` as ``after`` on subsequent calls to page through.
+        """
+        pager = self._pd.apps.list(
+            after=after,
+            limit=limit,
+            q=q or None,
+            sort_key=sort_key,
+            sort_direction=sort_direction,
+        )
+        page = next(pager.iter_pages(), None)
+        if page is None:
+            return {"apps": [], "next_cursor": None, "total_count": None}
+
+        apps = [_app_to_dict(a) for a in (page.items or [])]
+        page_info = page.response.page_info
+        next_cursor = page_info.end_cursor if page.has_next else None
+        return {
+            "apps": apps,
+            "next_cursor": next_cursor,
+            "total_count": page_info.total_count,
+        }
+
     def list_apps(
         self,
         *,

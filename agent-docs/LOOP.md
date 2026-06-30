@@ -3,11 +3,11 @@
 Ninja runs as a loop. **GitHub Issues are the work queue** (durable memory):
 the monitor produces work, the orchestrator does it.
 
-- **Monitor** (`monitor.py`): answers quick Slack messages inline. For
+- **Monitor** (`processes/monitor.py`): answers quick Slack messages inline. For
   substantial work, files an issue (`tools/issues.py create`). When there are
   open issues and no orchestrator is running, it launches one via
   `systemctl start ninja.service`.
-- **Orchestrator** (`orchestrator.py`), two phases per run, then exits:
+- **Orchestrator** (`processes/orchestrator.py`), two phases per run, then exits:
   - **Phase 1 — WORK** (only if open issues): work **exactly one** issue — the
     single highest-priority open issue: understand it (read the issue + Slack
     history for context), complete it, comment, and `close` it. The next cycle

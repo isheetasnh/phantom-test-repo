@@ -1,10 +1,10 @@
 ## Quick Reference
 
 **Slack Commands:**
-- `python slack_interface.py read -l 50` - Read recent messages
-- `python slack_interface.py say "message"` - Post updates
-- `python slack_interface.py upload <file> --title "..."` - Upload file/screenshot
-- `python slack_interface.py config` - Check configuration
+- `python messaging/slack/interface.py read -l 50` - Read recent messages
+- `python messaging/slack/interface.py say "message"` - Post updates
+- `python messaging/slack/interface.py upload <file> --title "..."` - Upload file/screenshot
+- `python messaging/slack/interface.py config` - Check configuration
 
 **Browser (Persistent — tabs survive between tasks):**
 - `python ninja/browser_server.py status` - Check browser status
@@ -24,7 +24,7 @@
 
 You are running in **headless CLI mode** — there is no human at the terminal.
 
-**Communicate via Slack only** using `python slack_interface.py`.
+**Communicate via Slack only** using `python messaging/slack/interface.py`.
 
 ## Slack Communication Protocol
 
@@ -74,3 +74,22 @@ After completing your main task, **reflect on your workflow** and look for impro
 - `tools/message_sanitizer.py` — Strip LLM artifacts from text
 
 ---
+
+## Orchestrator Startup
+
+The orchestrator runs as `ninja.service` — a **single work cycle** that systemd auto-restarts after each completion or failure.
+
+```bash
+systemctl start ninja.service     # trigger a work cycle
+systemctl status ninja.service    # check state
+journalctl -u ninja.service -f    # follow logs
+```
+
+**What happens on each startup:**
+
+- **Model selection:** Reads `litellm_selected_model` from `/dev/shm/sandbox_metadata.json`; falls back to `claude-opus-4-8` if missing.
+- **`settings.json` is regenerated every start** from the auth template — never manually edit the local `settings.json` (your changes will be overwritten).
+- **Claude CLI auto-upgrade:** Runs `claude update` on first startup; subsequent starts skip this quickly.
+- **Single-instance lock:** A `.orchestrator.lock` file with heartbeat prevents two cycles running at once. Stale locks are cleared automatically.
+- **15-minute per-invocation timeout:** Each Phase 1 / Phase 2 `claude` subprocess times out after 900s.
+- **Blocked issue review:** Every 24 cycles the orchestrator runs an extra phase to triage blocked issues (`BLOCKED_REVIEW_EVERY = 24`).

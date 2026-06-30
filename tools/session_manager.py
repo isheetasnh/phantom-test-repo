@@ -175,7 +175,7 @@ def restore_session(name: str) -> dict:
     # Connect to browser and set cookies
     try:
         sys.path.insert(0, str(REPO_ROOT))
-        from browser_interface import BrowserInterface
+        from browser.browser_interface import BrowserInterface
 
         browser = BrowserInterface.connect_cdp()
 

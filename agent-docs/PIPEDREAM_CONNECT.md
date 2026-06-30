@@ -12,7 +12,7 @@ trigger their actions from Claude's tool-use loop.
 S3 bucket (pipedream_credentials.json)
         │
         ▼
-slack_interface.py (startup)
+messaging/slack/interface.py (startup)
   └─ installs creds into ~/.agent_settings.json["pipedream"]
         │
         ├─ utils/pipedream.py      — server-side SDK wrapper

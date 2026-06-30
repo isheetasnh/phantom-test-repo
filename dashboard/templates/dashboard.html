@@ -87,39 +87,9 @@
             min-width: 90px; position: relative;
         }
         .kpi-val { font-size: 20px; font-weight: 700; color: var(--cyan); }
+        .kpi-val.green { color: var(--green); }
         .kpi-lbl { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
 
-        /* Cost KPI clickable */
-        .kpi-cost { cursor: pointer; transition: border-color 0.2s; }
-        .kpi-cost:hover { border-color: var(--cyan); }
-
-        /* Cost Breakdown Popover */
-        .cost-pop {
-            display:none; position:absolute; top: calc(100% + 12px); right:0; z-index:200;
-            background: var(--card); border:1px solid var(--border); border-radius:12px;
-            padding: 16px 20px; min-width: 340px;
-            box-shadow: 0 16px 48px rgba(0,0,0,0.55);
-            text-align: left;
-        }
-        .cost-pop.show { display:block; }
-        .cost-pop::before {
-            content:''; position:absolute; top:-6px; right:30px;
-            width:12px; height:12px; background:var(--card);
-            border-left:1px solid var(--border); border-top:1px solid var(--border);
-            transform:rotate(45deg);
-        }
-        .cost-pop-title {
-            font-size:13px; font-weight:600; color:var(--text);
-            margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--border);
-        }
-        .cr { display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px; }
-        .cr-l { color:var(--text2); display:flex; align-items:center; gap:6px; }
-        .cr-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
-        .cr-v { font-weight:600; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:12px; }
-        .cr-t { font-size:10px; color:var(--text3); margin-left:3px; font-weight:400; }
-        .cr-total { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); font-size:13px; }
-        .cr-total .cr-v { color:var(--cyan); font-size:15px; }
-        .cr-model { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); font-size:10px; color:var(--text3); }
 
         /* ── Stat Cards Row ── */
         .stats-grid {
@@ -345,39 +315,11 @@
                 </div>
             </div>
             <div class="hdr-kpis">
-                <div class="kpi kpi-cost" onclick="toggleCostBreakdown(event)">
-                    <div class="kpi-val" id="totalCost">$0</div>
-                    <div class="kpi-lbl">Est. Cost ▾</div>
-                    <!-- Cost popover -->
-                    <div class="cost-pop" id="costBreakdown">
-                        <div class="cost-pop-title">💰 Cost Breakdown</div>
-                        <div class="cr">
-                            <span class="cr-l"><span class="cr-dot" style="background:var(--blue)"></span>Input</span>
-                            <span><span class="cr-v" id="costInput">$0</span><span class="cr-t" id="costInputTokens"></span></span>
-                        </div>
-                        <div class="cr">
-                            <span class="cr-l"><span class="cr-dot" style="background:var(--purple)"></span>Output</span>
-                            <span><span class="cr-v" id="costOutput">$0</span><span class="cr-t" id="costOutputTokens"></span></span>
-                        </div>
-                        <div class="cr">
-                            <span class="cr-l"><span class="cr-dot" style="background:var(--orange)"></span>Cache Write 5m</span>
-                            <span><span class="cr-v" id="costCacheWrite5m">$0</span><span class="cr-t" id="costCacheWrite5mTokens"></span></span>
-                        </div>
-                        <div class="cr">
-                            <span class="cr-l"><span class="cr-dot" style="background:var(--red)"></span>Cache Write 1h</span>
-                            <span><span class="cr-v" id="costCacheWrite1h">$0</span><span class="cr-t" id="costCacheWrite1hTokens"></span></span>
-                        </div>
-                        <div class="cr">
-                            <span class="cr-l"><span class="cr-dot" style="background:var(--green)"></span>Cache Read</span>
-                            <span><span class="cr-v" id="costCacheRead">$0</span><span class="cr-t" id="costCacheReadTokens"></span></span>
-                        </div>
-                        <div class="cr cr-total">
-                            <span class="cr-l" style="color:var(--text);font-weight:600;">Total</span>
-                            <span class="cr-v" id="costTotal">$0</span>
-                        </div>
-                        <div class="cr-model">Model: <span id="costModel" style="color:var(--purple);">—</span></div>
-                    </div>
-                </div>
+                <a href="/cost" class="kpi" style="text-decoration:none; cursor:pointer; transition: border-color 0.2s;" onmouseover="this.style.borderColor='var(--green)'" onmouseout="this.style.borderColor=''">
+                    <div class="kpi-val green" id="totalCost" style="font-size:18px;">—</div>
+                    <div class="kpi-lbl">Total Cost</div>
+                </a>
+
                 <div class="kpi">
                     <div class="kpi-val" id="totalMessages">0</div>
                     <div class="kpi-lbl">Messages</div>
@@ -488,11 +430,21 @@
         /* ═══════════ INIT ═══════════ */
         async function init() {
             await loadAgent();
-            await Promise.all([loadStats(), loadLogFiles(), loadTools(), loadPrompts(), loadChart()]);
+            await Promise.all([loadStats(), loadLogFiles(), loadTools(), loadPrompts(), loadChart(), loadTotalCost()]);
             setInterval(loadStats, 30000);
             setInterval(loadPrompts, 60000);
             setInterval(loadTools, 60000);
             setInterval(loadChart, 60000);
+            setInterval(loadTotalCost, 30000);
+        }
+
+        async function loadTotalCost() {
+            try {
+                const res = await fetch('/api/cost/prompts');
+                const { prompts } = await res.json();
+                const total = prompts.filter(p => p.cost != null).reduce((s, p) => s + p.cost, 0);
+                document.getElementById('totalCost').textContent = total > 0 ? `$${total.toFixed(4)}` : '—';
+            } catch(e) { console.error('loadTotalCost:', e); }
         }
         init();
 
@@ -521,7 +473,6 @@
                 const data = await res.json();
                 const s = data.stats || {};
 
-                document.getElementById('totalCost').textContent = `$${(s.total_cost || 0).toFixed(2)}`;
                 document.getElementById('totalMessages').textContent = formatNumber(s.total_messages || 0);
                 document.getElementById('totalTools').textContent = formatNumber(s.total_tool_uses || 0);
                 document.getElementById('inputTokens').textContent = formatTokens(s.total_input_tokens || 0);
@@ -537,32 +488,6 @@
                     document.getElementById('agentModel').textContent = '🧠 No model data';
                 }
 
-                // Cost breakdown
-                const p = s.pricing || {};
-                const inp = s.total_input_tokens || 0;
-                const out = s.total_output_tokens || 0;
-                const cw5 = s.total_cache_write_5m_tokens || 0;
-                const cw1 = s.total_cache_write_1h_tokens || 0;
-                const cr = s.total_cache_read_tokens || 0;
-
-                const cInput = (inp / 1e6) * (p.input || 0);
-                const cOutput = (out / 1e6) * (p.output || 0);
-                const cCw5m = (cw5 / 1e6) * (p.cache_write_5m || 0);
-                const cCw1h = (cw1 / 1e6) * (p.cache_write_1h || 0);
-                const cRead = (cr / 1e6) * (p.cache_read || 0);
-
-                document.getElementById('costInput').textContent = `$${cInput.toFixed(4)}`;
-                document.getElementById('costInputTokens').textContent = ` (${formatTokens(inp)} @ $${p.input||0}/M)`;
-                document.getElementById('costOutput').textContent = `$${cOutput.toFixed(4)}`;
-                document.getElementById('costOutputTokens').textContent = ` (${formatTokens(out)} @ $${p.output||0}/M)`;
-                document.getElementById('costCacheWrite5m').textContent = `$${cCw5m.toFixed(4)}`;
-                document.getElementById('costCacheWrite5mTokens').textContent = ` (${formatTokens(cw5)} @ $${p.cache_write_5m||0}/M)`;
-                document.getElementById('costCacheWrite1h').textContent = `$${cCw1h.toFixed(4)}`;
-                document.getElementById('costCacheWrite1hTokens').textContent = ` (${formatTokens(cw1)} @ $${p.cache_write_1h||0}/M)`;
-                document.getElementById('costCacheRead').textContent = `$${cRead.toFixed(4)}`;
-                document.getElementById('costCacheReadTokens').textContent = ` (${formatTokens(cr)} @ $${p.cache_read||0}/M)`;
-                document.getElementById('costTotal').textContent = `$${(s.total_cost || 0).toFixed(4)}`;
-                document.getElementById('costModel').textContent = s.model || '—';
             } catch(e) { console.error('loadStats:', e); }
         }
 
@@ -797,18 +722,7 @@
             } catch(e) { console.error('loadChart:', e); }
         }
 
-        /* ═══════════ COST POPOVER ═══════════ */
-        function toggleCostBreakdown(e) {
-            e.stopPropagation();
-            document.getElementById('costBreakdown').classList.toggle('show');
-        }
-        document.addEventListener('click', function(e) {
-            const pop = document.getElementById('costBreakdown');
-            const kpi = document.querySelector('.kpi-cost');
-            if (pop && kpi && !kpi.contains(e.target)) pop.classList.remove('show');
-        });
-
-        /* ═══════════ UTILITIES ═══════════ */
+/* ═══════════ UTILITIES ═══════════ */
         function formatNumber(n) {
             if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
             if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
