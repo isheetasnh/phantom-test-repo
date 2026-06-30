@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ninja.utils.pricing import get_pricing
+from ninja.utils.cost import compute_cost
 
 # Configuration
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -196,14 +196,13 @@ class StatsCache:
         for f in files:
             sd = parse_jsonl_file(f)
 
-            # Calculate per-session cost using the session's model pricing
-            pricing = get_pricing(sd.model)
-            session_cost = (
-                (sd.input_tokens / 1_000_000) * pricing["input"]
-                + (sd.output_tokens / 1_000_000) * pricing["output"]
-                + (sd.cache_write_5m_tokens / 1_000_000) * pricing["cache_write_5m"]
-                + (sd.cache_write_1h_tokens / 1_000_000) * pricing["cache_write_1h"]
-                + (sd.cache_read_tokens / 1_000_000) * pricing["cache_read"]
+            session_cost = compute_cost(
+                sd.model,
+                sd.input_tokens,
+                sd.output_tokens,
+                sd.cache_write_5m_tokens,
+                sd.cache_write_1h_tokens,
+                sd.cache_read_tokens,
             )
             total_cost += session_cost
 

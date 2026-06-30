@@ -285,7 +285,7 @@ def run_health_check(auto_fix: bool = False) -> dict:
         if results["settings"]["status"] != "ok":
             try:
                 sys.path.insert(0, str(REPO_ROOT))
-                from orchestrator import ensure_settings_file, setup_logging
+                from processes.orchestrator import ensure_settings_file, setup_logging
 
                 logger = setup_logging("health_check")
                 if ensure_settings_file(logger):

@@ -66,7 +66,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import requests
-from utils.litellm_client import api_url, get_config, get_headers, resolve_model
+from clients.litellm_client import api_url, get_config, get_headers, resolve_model
 
 # ---------------------------------------------------------------------------
 # Constants

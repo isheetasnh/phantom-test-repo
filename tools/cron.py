@@ -34,7 +34,7 @@ from pathlib import Path
 # Allow running as `python tools/cron.py` from src/ninja.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import cron_scheduler as cs  # noqa: E402
+import services.cron_service as cs  # noqa: E402
 
 
 def _fmt_ts(ts: float | None) -> str:

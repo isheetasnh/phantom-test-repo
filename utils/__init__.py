@@ -42,4 +42,4 @@ MCP Tools (Python):
         tools = await client.list_tools()
 """
 
-from utils.litellm_client import get_config
+from clients.litellm_client import get_config

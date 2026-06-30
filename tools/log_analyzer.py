@@ -27,7 +27,7 @@ from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-from ninja.utils.pricing import get_pricing
+from ninja.utils.cost import compute_cost_breakdown
 
 
 def analyze_log(filepath: str) -> dict:
@@ -143,19 +143,14 @@ def analyze_log(filepath: str) -> dict:
     except IOError as e:
         return {"error": f"Cannot read file: {e}"}
 
-    # Calculate cost
-    pricing = get_pricing(model)
-    cost = {
-        "input": tokens["input"] / 1_000_000 * pricing["input"],
-        "output": tokens["output"] / 1_000_000 * pricing["output"],
-        "cache_read": tokens["cache_read"] / 1_000_000 * pricing["cache_read"],
-        "cache_write_5m": tokens["cache_write_5m"]
-        / 1_000_000
-        * pricing["cache_write_5m"],
-        "cache_write_1h": tokens["cache_write_1h"]
-        / 1_000_000
-        * pricing["cache_write_1h"],
-    }
+    cost = compute_cost_breakdown(
+        model,
+        tokens["input"],
+        tokens["output"],
+        tokens["cache_write_5m"],
+        tokens["cache_write_1h"],
+        tokens["cache_read"],
+    )
     cost["total"] = sum(cost.values())
 
     # Calculate duration

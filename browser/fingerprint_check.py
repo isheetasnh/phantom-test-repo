@@ -1,5 +1,5 @@
 """
-Test Stealth Fixes — MOVED to tools/stealth_audit.py
+Fingerprint Check — MOVED to tools/stealth_audit.py
 
 This file is a compatibility shim. Use tools/stealth_audit.py instead.
 """

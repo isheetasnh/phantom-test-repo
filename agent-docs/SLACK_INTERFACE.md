@@ -53,6 +53,8 @@ python slack_interface.py say "Hello team!"
 python slack_interface.py say "Thread reply" -t "1234567890.123456"
 ```
 
+> **Sandbox URL auto-conversion:** Any `0.0.0.0:<port>` in message text is automatically rewritten to the public sandbox URL before sending. When sharing links to local services (dashboards, servers), use `0.0.0.0:<port>` form — no manual URL lookup needed.
+
 ### 4. Upload Files
 
 ```bash
@@ -357,6 +359,8 @@ Tokens are loaded in this order of priority:
 3. **Environment Variable**: `SLACK_BOT_TOKEN` or `SLACK_MCP_XOXB_TOKEN`
 
 > ⚠️ **Only bot tokens (xoxb-\*) are supported.** User tokens (xoxp-\*) are rejected with an error.
+
+> **Auto-refresh:** On `token_expired` or `invalid_auth` errors the client automatically re-reads `/dev/shm/mcp-token` and updates `~/.agent_settings.json`. No agent intervention needed; this is transparent to callers.
 
 ### Manual Token Setup
 

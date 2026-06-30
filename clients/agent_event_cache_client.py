@@ -10,7 +10,7 @@ Auth:         Bearer ANTHROPIC_AUTH_TOKEN (from /root/.claude/settings.json)
 Feature flag: "use_agent_event_cache": true in /dev/shm/sandbox_metadata.json
 
 Endpoint:
-    GET /messages
+    GET /db/messages
         ?workspace_id=T123
         &channel_id=C123
         &limit=50
@@ -30,9 +30,13 @@ Response:
 """
 
 import json
+import logging
 import os
+from functools import cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 import requests
 from pydantic import BaseModel, Field
@@ -51,22 +55,14 @@ SETTINGS_PATHS = [
 _metadata_cache: Optional[Dict[str, Any]] = None
 
 
-# ---------------------------------------------------------------------------
-# Config helpers (self-contained — no imports from slack_interface)
-# ---------------------------------------------------------------------------
-
-
+@cache
 def _load_metadata() -> Dict[str, Any]:
     """Load and cache /dev/shm/sandbox_metadata.json. Returns {} on failure."""
-    global _metadata_cache
-    if _metadata_cache is not None:
-        return _metadata_cache
     try:
         with open(SANDBOX_METADATA_FILE, "r") as f:
-            _metadata_cache = json.load(f)
+            return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, IOError):
-        _metadata_cache = {}
-    return _metadata_cache
+        return {}
 
 
 def is_event_cache_enabled() -> bool:
@@ -110,7 +106,7 @@ def _get_auth_token() -> str:
     # Try env var override first
     token = os.environ.get("LITELLM_API_KEY")
     if token:
-        return token
+        return token.strip().removeprefix("Bearer ").removeprefix("bearer ")
 
     # Read from settings files
     for path in SETTINGS_PATHS:
@@ -120,7 +116,7 @@ def _get_auth_token() -> str:
                     data = json.load(f)
                 token = data.get("env", {}).get("ANTHROPIC_AUTH_TOKEN", "")
                 if token:
-                    return token
+                    return token.strip().removeprefix("Bearer ").removeprefix("bearer ")
             except (json.JSONDecodeError, IOError):
                 continue
 
@@ -135,7 +131,7 @@ def _get_auth_token() -> str:
 
 
 class GetMessagesRequest(BaseModel):
-    """Request parameters for GET /messages."""
+    """Request parameters for GET /db/messages."""
 
     workspace_id: str = Field(description="Slack workspace/team ID (e.g. T123)")
     channel_id: str = Field(description="Slack channel or DM ID (e.g. C123)")
@@ -161,7 +157,7 @@ class GetMessagesRequest(BaseModel):
 
 
 class GetMessagesResponse(BaseModel):
-    """Response schema for GET /messages."""
+    """Response schema for GET /db/messages."""
 
     workspace_id: str
     channel_id: str
@@ -177,7 +173,7 @@ class GetMessagesResponse(BaseModel):
 
 class AgentEventCacheClient:
     """
-    Client for the agent-event-cache GET /messages endpoint.
+    Client for the agent-event-cache GET /db/messages endpoint.
 
     Usage:
         from clients.agent_event_cache_client import (
@@ -228,10 +224,21 @@ class AgentEventCacheClient:
             RuntimeError: On configuration errors
         """
         resp = requests.get(
-            f"{self._base_url}/messages",
+            f"{self._base_url}/db/messages",
             params=request.to_params(),
             headers=self._headers(),
             timeout=self._timeout,
         )
         resp.raise_for_status()
-        return GetMessagesResponse.model_validate(resp.json())
+        result = GetMessagesResponse.model_validate(resp.json())
+        logger.info(
+            "agent-event-cache get_messages succeeded",
+            extra={
+                "channel_id": request.channel_id,
+                "workspace_id": request.workspace_id,
+                "message_count": len(result.messages),
+                "total": result.total,
+                "has_next_page": result.next_token is not None,
+            },
+        )
+        return result

@@ -7,6 +7,8 @@ in a single Flask application (no separate claude_monitor process needed).
 
 import json
 import os
+import re
+import sys
 import threading
 import time
 from datetime import datetime
@@ -14,7 +16,9 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request
 from flask_cors import CORS
-from utils.pricing import get_pricing as get_pricing_for_model
+from services.monitor_service import TASK_LOG_FILE
+from utils.cost import compute_cost
+from utils.pricing import get_pricing
 
 app = Flask(__name__)
 CORS(app)
@@ -233,6 +237,7 @@ def parse_jsonl_file(filepath: str) -> SessionData:
                                 "content": user_content[:2000],
                                 "response": "",
                                 "uuid": entry.get("uuid", ""),
+                                "model": data.model,
                                 "steps": [],  # [{type, name/text, timestamp}]
                                 "tool_count": 0,
                                 "step_count": 0,
@@ -350,6 +355,14 @@ class StatsCache:
         models_seen = {}  # model -> count of messages using it
         for f in files:
             sd = parse_jsonl_file(f)
+            session_cost = compute_cost(
+                sd.model,
+                sd.input_tokens,
+                sd.output_tokens,
+                sd.cache_write_5m_tokens,
+                sd.cache_write_1h_tokens,
+                sd.cache_read_tokens,
+            )
             sessions.append(
                 {
                     "session_id": sd.session_id,
@@ -363,6 +376,9 @@ class StatsCache:
                     "start_time": sd.start_time,
                     "last_time": sd.last_time,
                     "model": sd.model,
+                    "cost": round(session_cost, 6),
+                    "last_prompt": sd.prompts[-1]["content"] if sd.prompts else "",
+                    "_prompts": sd.prompts,
                 }
             )
             if sd.model:
@@ -401,14 +417,13 @@ class StatsCache:
         if models_seen:
             current_model = max(models_seen, key=models_seen.get)
 
-        # Calculate cost using the correct pricing for the detected model
-        pricing = get_pricing_for_model(current_model)
-        cost = (
-            (total.input_tokens / 1_000_000) * pricing["input"]
-            + (total.output_tokens / 1_000_000) * pricing["output"]
-            + (total.cache_write_5m_tokens / 1_000_000) * pricing["cache_write_5m"]
-            + (total.cache_write_1h_tokens / 1_000_000) * pricing["cache_write_1h"]
-            + (total.cache_read_tokens / 1_000_000) * pricing["cache_read"]
+        cost = compute_cost(
+            current_model,
+            total.input_tokens,
+            total.output_tokens,
+            total.cache_write_5m_tokens,
+            total.cache_write_1h_tokens,
+            total.cache_read_tokens,
         )
 
         return {
@@ -423,7 +438,7 @@ class StatsCache:
                 "total_cost": round(cost, 4),
                 "model": current_model,
                 "models_seen": models_seen,
-                "pricing": pricing,
+                "pricing": get_pricing(current_model),
             },
             "sessions": sessions,
             "tools": {
@@ -539,6 +554,80 @@ def api_claude_prompts():
     """Get recent user prompts with responses."""
     data = stats_cache.get_stats()
     return jsonify({"prompts": data["prompts"]})
+
+
+def _load_task_log() -> list:
+    """Load task log entries written by monitor.py before each Claude invocation."""
+    entries = []
+    if not TASK_LOG_FILE.exists():
+        return entries
+    try:
+        with open(TASK_LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError as e:
+                        print(
+                            f"❌ Skipping malformed line in {TASK_LOG_FILE}: {e}",
+                            file=sys.stderr,
+                        )
+                        continue
+    except Exception as e:
+        print(f"❌ Error reading {TASK_LOG_FILE}: {e}", file=sys.stderr)
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# Routes - Cost analysis
+# ---------------------------------------------------------------------------
+@app.route("/cost")
+def cost():
+    return render_template("cost.html")
+
+
+@app.route("/api/cost/prompts")
+def api_cost_prompts():
+    """Per-prompt cost data — one entry per user question."""
+    data = stats_cache.get_stats()
+    task_log = {e["id"]: e for e in _load_task_log() if e.get("id")}
+    rows = []
+    for session in data["sessions"]:
+        model = session.get("model", "")
+        for p in session.get("_prompts", []):
+            ts = p.get("timestamp")
+            prompt_uuid = p.get("uuid", "")
+            log_entry = task_log.get(prompt_uuid)
+
+            content = p.get("content", "")
+            matches = re.findall(r"^Text: (.+)$", content, re.MULTILINE)
+            task_fallback = (
+                " | ".join(t.strip() for t in matches) if matches else content[:200]
+            )
+
+            if log_entry:
+                task = (
+                    log_entry.get("title")
+                    or " | ".join(log_entry.get("texts", []))
+                    or task_fallback
+                )
+                cost = log_entry.get("cost")
+            else:
+                task = task_fallback
+                cost = None
+
+            rows.append(
+                {
+                    "id": prompt_uuid,
+                    "timestamp": ts,
+                    "task": task,
+                    "model": model,
+                    "cost": round(cost, 6) if cost is not None else None,
+                }
+            )
+    rows.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+    return jsonify({"prompts": rows})
 
 
 # ---------------------------------------------------------------------------
