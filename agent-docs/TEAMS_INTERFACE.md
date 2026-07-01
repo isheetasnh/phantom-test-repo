@@ -1,113 +1,332 @@
-# Microsoft Teams Interface POC
+# Microsoft Teams Interface CLI
 
-This POC lets Phantom receive tasks from Microsoft Teams and post results back
-through Microsoft Graph, using the same agent execution path as the Slack
-monitor.
+A command-line tool and Python API for interacting with a Microsoft Teams
+channel, backed by the Microsoft Graph API.
 
-It is intentionally small:
+## Features
 
-- `teams_interface.py` is the Teams CLI/API layer.
-- `teams_monitor.py` polls recent Teams messages and invokes Phantom.
-- Teams channels default to mention-only handling, so normal channel chatter is
-  ignored unless it contains `phantom` or `@phantom`.
+- 🔑 **Config-file credentials** — reads the Graph access token, team ID, and channel ID from `~/.agent_settings.json`
+- 💬 **Channel messaging** — post top-level messages or threaded replies
+- 🧵 **Threaded replies** — reply under an existing message via `-t <message_id>`
+- 😀 **Reactions** — add emoji reactions to a message or a threaded reply
+- 📎 **File uploads** — upload local files to the channel Files folder
+- 🐍 **Python API** — use `TeamsInterface` as a library
+- 🔁 **Transient-retry** — Graph calls retry on throttling/5xx (honoring `Retry-After`)
 
-## Requirements
+## Installation
 
-You need a Microsoft Graph access token with Teams message permissions for the
-target channel or chat. For channel mode, the token must be allowed to read and
-send channel messages. For chat mode, the token must be allowed to read and send
-chat messages.
+The tool is included in this repository. No additional installation required.
 
-For a fast POC, use a delegated Graph token for a dedicated Phantom service
-account. Then save that service account's `/me` id as `teams.self_user_id` so
-the monitor skips Phantom's own posts.
-
-## Configure Channel Mode
+### Dependencies
 
 ```bash
-python3 -m phantom.teams_interface config \
-  --set-access-token "$MICROSOFT_GRAPH_ACCESS_TOKEN" \
-  --set-team-id "$TEAM_ID" \
-  --set-channel-id "$CHANNEL_ID" \
-  --set-default channel
-
-python3 -m phantom.teams_interface whoami --save-self
+pip install requests
 ```
 
-Send a test message:
+> The HTTP layer uses the Python standard library (`urllib`); no extra packages
+> are required for the interface itself.
+
+## Quick Start
+
+### 1. Configure credentials
+
+Teams uses a Microsoft Graph access token plus the target team and channel IDs.
+There are no env vars to set — everything lives in the config file.
 
 ```bash
-python3 -m phantom.teams_interface say "Phantom Teams POC is online"
+# Set the Microsoft Graph access token
+python messaging/teams/interface.py config --set-access-token "<graph-access-token>"
+
+# Set the team and channel the agent posts to
+python messaging/teams/interface.py config --set-team-id "<team-id>"
+python messaging/teams/interface.py config --set-channel-id "<channel-id>"
+
+# Verify
+python messaging/teams/interface.py config
 ```
 
-Read recent messages:
+### 2. Send messages
 
 ```bash
-python3 -m phantom.teams_interface read --limit 20
+# Post a new top-level message to the configured channel
+python messaging/teams/interface.py say "Hello team!"
+
+# Reply under an existing message (thread)
+python messaging/teams/interface.py say "Thread reply" -t "<message_id>"
 ```
 
-Run the monitor:
+Message text is Markdown — it is rendered to Teams-flavored HTML before sending.
+
+### 3. Upload files
 
 ```bash
-python3 -m phantom.teams_monitor --interval 60
+# Upload a file to the channel Files folder
+python messaging/teams/interface.py upload report.pdf
+
+# Override the detected content type
+python messaging/teams/interface.py upload clip.dat --content-type audio/mp4
+
+# Require the file to resolve to an audio/* type (used by audio flows)
+python messaging/teams/interface.py upload voice.m4a --audio
 ```
 
-In Teams, type a request such as:
+## Configuration
 
-```text
-phantom pull the latest pricing details for our top 5 competitors and summarize them
+### Config file location
+
+Configuration is stored under the `teams` key of `~/.agent_settings.json`:
+
+```json
+{
+  "teams": {
+    "access_token": "<graph-access-token>",
+    "team_id": "<team-id>",
+    "channel_id": "<channel-id>",
+    "access_token_expires_at": 1735689600
+  }
+}
 ```
 
-Phantom queues the message, runs the same Claude wrapper used by the Slack
-monitor, and replies in the Teams channel thread using:
+### Setting values
 
 ```bash
-python3 -m phantom.teams_interface say "message" --reply-to <message_id>
+# Set Graph access token
+python messaging/teams/interface.py config --set-access-token "<graph-access-token>"
+
+# Set team ID
+python messaging/teams/interface.py config --set-team-id "<team-id>"
+
+# Set channel ID
+python messaging/teams/interface.py config --set-channel-id "<channel-id>"
+
+# Clear all Teams configuration
+python messaging/teams/interface.py config --clear
+
+# View current config (token is shown truncated)
+python messaging/teams/interface.py config
 ```
 
-## Configure Chat Mode
+### Custom config file
 
 ```bash
-python3 -m phantom.teams_interface config \
-  --set-access-token "$MICROSOFT_GRAPH_ACCESS_TOKEN" \
-  --set-chat-id "$CHAT_ID" \
-  --set-default chat
-
-python3 -m phantom.teams_interface say "Phantom Teams chat POC is online"
-python3 -m phantom.teams_monitor --interval 60
+python messaging/teams/interface.py -C /path/to/config.json config
 ```
 
-Chat messages do not use the channel-thread `--reply-to` flow in this POC.
-Phantom posts a normal chat message as its response.
+## CLI Commands
 
-## Useful Discovery Commands
+### Configuration
 
 ```bash
-python3 -m phantom.teams_interface teams
-python3 -m phantom.teams_interface channels --team-id "$TEAM_ID"
-python3 -m phantom.teams_interface whoami --save-self
-python3 -m phantom.teams_interface config
+# Show current configuration
+python messaging/teams/interface.py config
+
+# Set credentials
+python messaging/teams/interface.py config --set-access-token "<token>"
+python messaging/teams/interface.py config --set-team-id "<team-id>"
+python messaging/teams/interface.py config --set-channel-id "<channel-id>"
 ```
 
-## Token Sources
+### Messaging
 
-`teams_interface.py` looks for a Microsoft Graph token in this order:
+```bash
+# Post a top-level message to the configured channel
+python messaging/teams/interface.py say "Your message here"
 
-1. `--access-token`
-2. Environment variables such as `MICROSOFT_GRAPH_ACCESS_TOKEN`
-3. `~/.agent_settings.json["teams"]["access_token"]`
-4. `/dev/shm/mcp-token` entries named `Microsoft Teams`, `Teams`, or
-   `microsoft_teams`
-5. Optional client credentials stored under the `teams` settings block
+# Reply in a thread (under a parent message id)
+python messaging/teams/interface.py say "Thread reply" -t "<message_id>"
+```
 
-The CLI stores Teams config in a nested `teams` object and preserves existing
-top-level Slack settings.
+### File Uploads
 
-## Notes And Limitations
+```bash
+# Upload a file to the channel Files folder
+python messaging/teams/interface.py upload path/to/file.png
 
-- This is a Graph polling POC, not a full Microsoft Bot Framework app.
-- Channel mode replies in a Teams thread via Graph message replies.
-- The default monitor mode requires a Phantom mention. Use `--all-human` only
-  in a dedicated test channel.
-- Delegated tokens post as the delegated account. A dedicated Phantom service
-  account makes own-message skipping and audit trails much cleaner.
+# Override the content type
+python messaging/teams/interface.py upload data.bin --content-type application/pdf
+
+# Enforce an audio/* content type
+python messaging/teams/interface.py upload voice.m4a --audio
+```
+
+### Reading Messages
+
+```bash
+# Read recent channel messages (default: 10)
+python messaging/teams/interface.py read
+
+# Read more messages (capped at the Graph page size of 50)
+python messaging/teams/interface.py read --limit 50
+```
+
+### Reactions
+
+```bash
+# React to a channel message (default emoji: 🥷)
+python messaging/teams/interface.py react "<message_id>"
+
+# React with a specific emoji name or character
+python messaging/teams/interface.py react "<message_id>" ghost
+
+# React to a threaded reply (provide the parent message id)
+python messaging/teams/interface.py react "<reply_id>" 🥷 --reply-to "<parent_message_id>"
+```
+
+## Python API
+
+### Basic Usage
+
+```python
+from messaging.teams.interface import TeamsInterface
+
+# Initialize (loads ~/.agent_settings.json by default)
+teams = TeamsInterface()
+
+# Check connection (token + team_id + channel_id all present)
+if not teams.is_connected:
+    print("Configure Teams credentials first!")
+    exit(1)
+
+# Post a top-level message
+teams.say("Hello team!")
+
+# Reply in a thread
+teams.say("Thread reply", thread_ts="<message_id>")
+```
+
+### File Upload Example
+
+```python
+from messaging.teams.interface import TeamsInterface
+
+teams = TeamsInterface()
+
+# Upload a file to the channel Files folder; returns the Graph DriveItem
+item = teams.upload_file("designs/mockup.png")
+print(f"Uploaded: {item.get('name')} ({item.get('id')})")
+```
+
+### Reading and Reacting
+
+```python
+from messaging.teams.interface import TeamsInterface
+
+teams = TeamsInterface()
+
+# Recent channel messages (newest first)
+for msg in teams.get_history(limit=10):
+    print(f"{msg.get('from')}: {msg.get('text')}")
+
+# Replies under a parent message
+replies = teams.get_replies("<parent_message_id>", limit=20)
+
+# React to a message (or a threaded reply via reply_to_id)
+teams.react("<message_id>", "🥷")
+teams.react("<reply_id>", "👻", reply_to_id="<parent_message_id>")
+```
+
+### Error Handling
+
+```python
+from messaging.teams.interface import TeamsInterface
+from messaging.teams.exceptions import TeamsConfigError, TeamsAPIError
+
+teams = TeamsInterface()
+
+try:
+    teams.say("Hello!")
+except TeamsConfigError as e:
+    print(f"Configuration error: {e}")  # missing token/team/channel, bad input
+except TeamsAPIError as e:
+    print(f"Graph API error ({e.status}): {e}")  # non-2xx response from Graph
+```
+
+## Authentication
+
+The interface authenticates to Microsoft Graph with a bearer **access token**
+loaded from the config file (`~/.agent_settings.json`). The token is populated
+there at install time: the installer reads it from the `MSTeams=` entry in
+`/dev/shm/mcp-token` and stores it via `config --set-access-token`.
+
+At runtime the interface reads only the stored config value — it does **not**
+re-read `/dev/shm/mcp-token` or any environment variable. To set or refresh the
+token manually:
+
+```bash
+python messaging/teams/interface.py config --set-access-token "<graph-access-token>"
+```
+
+`access_token_expires_at` is stored alongside the token for reference, but the
+interface does **not** auto-refresh. When a token expires (Graph returns
+`401`/`403`), set a fresh one with the same command.
+
+The token may be a delegated user token or an application token. Own-message
+detection is id-based (tracking what this process posts), so a delegated token
+that shares its identity with the human operator does not cause the monitor to
+drop the operator's own messages.
+
+## Troubleshooting
+
+### "missing Teams destination value" / `TeamsConfigError`
+
+A required value (token, team ID, or channel ID) is missing.
+
+**Solution**: set all three:
+
+```bash
+python messaging/teams/interface.py config --set-access-token "<token>"
+python messaging/teams/interface.py config --set-team-id "<team-id>"
+python messaging/teams/interface.py config --set-channel-id "<channel-id>"
+```
+
+### Graph auth failed (`401` / `403`)
+
+The access token is expired or lacks permission for the team/channel.
+
+**Solution**: refresh the token, then re-set it:
+
+```bash
+python messaging/teams/interface.py config --set-access-token "<new-token>"
+```
+
+Verify with a health check from Python:
+
+```python
+from messaging.teams.interface import TeamsInterface
+print(TeamsInterface().check_messaging_health())
+```
+
+### Reply posts as a new message instead of threading
+
+`say` only threads when `thread_ts` (the parent message id) is provided.
+
+**Solution**: pass the parent id:
+
+```bash
+python messaging/teams/interface.py say "Reply text" -t "<parent_message_id>"
+```
+
+## API Reference
+
+### TeamsInterface Class
+
+| Method                                                  | Description                                       |
+| ------------------------------------------------------- | ------------------------------------------------- |
+| `say(message, channel, thread_ts, ...)`                 | Post a message (top-level or threaded reply)      |
+| `upload_file(file_path, channel, ..., require_audio)`   | Upload a local file to the channel Files folder   |
+| `get_messages(channel, limit)`                          | Fetch recent channel messages (newest first)      |
+| `get_history(channel, limit)`                           | MessagingInterface entry point → `get_messages`   |
+| `get_replies(parent_message_id, channel, limit)`        | Fetch replies under a parent message              |
+| `react(message_id, emoji, channel, reply_to_id)`        | Add an emoji reaction to a message/reply          |
+| `collect_pending(...)`                                  | Monitor hook — classify/queue unanswered messages |
+| `check_messaging_health()`                              | Validate credentials against Graph (never raises) |
+
+### Properties
+
+| Property       | Description                                                  |
+| -------------- | ------------------------------------------------------------ |
+| `is_connected` | Boolean — True when token, team_id, and channel_id are set   |
+
+## License
+
+MIT License - NinjaTech AI
