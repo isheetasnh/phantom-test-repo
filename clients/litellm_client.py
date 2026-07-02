@@ -26,6 +26,8 @@ SETTINGS_PATHS = [
     Path(__file__).resolve().parent.parent / "settings.json",
 ]
 
+_config_cache = None
+
 
 @cache
 def _load_settings() -> dict:
@@ -111,8 +113,6 @@ MODELS = {
     # Embedding models
     "embed-small": "openai/openai/text-embedding-3-small",
     "embed-large": "openai/openai/text-embedding-3-large",
-    # Audio / transcription models
-    "ninja-transcribe": "openai/openai/gpt-4o-transcribe",  # Audio transcription (set to the gateway's id if it differs)
 }
 
 

@@ -1,234 +1,90 @@
+#!/usr/bin/env python3
 """
-PipedreamClient — Pipedream Connect Integration Client
-======================================================
+utils/pipedream.py — Pipedream Connect SDK wrapper for Ninja.
 
-HTTP client for the integrations gateway, which routes requests to
-Pipedream Connect. Accessed via LiteLLM.
+Reads credentials from ``~/.agent_settings.json["pipedream"]`` (populated
+by ``slack_interface.py`` at startup) and exposes a thin, typed wrapper
+around the official ``pipedream`` Python SDK (v2).
 
-The gateway acts as a proxy between Phantom and Pipedream Connect —
-all tool calls and direct API requests go through it, which then
-forwards them to Pipedream's infrastructure for credential resolution
-and upstream API execution.
-
-Entry points:
-
-    chat_with_tools(messages, model, ...)
-        POST /v1/chat/completions with the ninja_integrations_gateway_user MCP server.
-        LiteLLM fetches the tool list, passes it to the LLM, executes any
-        tool calls, and returns the final response — all in one request.
-
-    get_connection_link()
-        GET the Pipedream Connect OAuth connection link for the user.
-        No LLM involved. Returns a short-lived OAuth connection URL.
-
-    check_health()
-        GET /ninja/integrations-gateway/health — no auth required.
-        Returns the parsed JSON response from the gateway health endpoint.
-
-    list_accounts()
-        GET /ninja/integrations-gateway/accounts — list connected apps for the user.
-
-    list_apps(q, limit)
-        GET /ninja/integrations-gateway/apps — browse the Pipedream app catalog.
-
-    run_action(action_key, props)
-        POST /ninja/integrations-gateway/actions/run — execute a Pipedream action.
-
-    create_connect_token(app_slug)
-        GET /ninja/integrations-gateway/connect-token — mint a short-lived Connect token.
-
-Configuration is read automatically:
-    - NINJA_USER_ID env var (or ~/.agent_settings.json ninja_user_id)
-      → x-ninja-user-id header
-    - ~/.agent_settings.json default_team_id + default_channel_id
-      → x-ninja-integration-channel-id header
-    - /root/.claude/settings.json (or local settings.json)
-      → api_key and base_url (via clients.litellm_client.get_config)
-    - /dev/shm/sandbox_metadata.json thread_id
-      → x-ninja-conversation-id header (auto-populated, no override)
-
-Usage::
-
+Quick reference
+---------------
     from utils.pipedream import PipedreamClient
 
-    pdx = PipedreamClient()
-    response = pdx.chat_with_tools(
-        messages=[{"role": "user", "content": "What's on my calendar today?"}],
-    )
-    print(response)
+    pd = PipedreamClient()
+    user_id = pd.external_user_id          # "T0A9Q27KD1T.C0B1K38ETGV"
 
-    link = pdx.get_connection_link()
-    print(link)
+    token    = pd.create_connect_token()   # short-lived token for frontend
+    accounts = pd.list_accounts()          # connected accounts for this user
+    apps     = pd.list_apps(q="github")    # searchable app catalog
 
-    accounts = pdx.list_accounts()
-    print(accounts)
+CLI
+---
+    python -m utils.pipedream status
+    python -m utils.pipedream token
+    python -m utils.pipedream apps [--q QUERY] [--limit N]
+    python -m utils.pipedream accounts [--app SLUG]
 """
 
 from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.parse
-import urllib.request
+import sys
+import time
 from pathlib import Path
-from typing import Any
-
-from clients.litellm_client import get_config
-from constants import (
-    HEADER_NINJA_CONVERSATION_ID,
-    HEADER_NINJA_EVENT_ID,
-    HEADER_NINJA_SANDBOX_ID,
-)
-from core.config import config_cached
-from messaging import get_messaging_interface
+from typing import Any, Dict, Iterator, List, Optional
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_MCP_USER_SERVER = "ninja_integrations_gateway_user"
-_AGENT_SETTINGS_PATH = Path.home() / ".agent_settings.json"
-_SANDBOX_METADATA_PATH = Path("/dev/shm/sandbox_metadata.json")
-_PH_METADATA_PATH = Path("/dev/shm/ph_metadata.json")
-_CONNECTION_LINK_PATH = "/ninja/integrations-gateway/get-integ-connection-ui-link"
-_HEALTH_PATH = "/ninja/integrations-gateway/health"
-_HTTP_PROXY_PATH = "/ninja/integrations-gateway/http"
-_ACCOUNTS_PATH = "/ninja/integrations-gateway/accounts"
-_APPS_PATH = "/ninja/integrations-gateway/apps"
-_RUN_ACTION_PATH = "/ninja/integrations-gateway/actions/run"
-
+DEFAULT_SETTINGS_PATH = Path.home() / ".agent_settings.json"
+_PIPEDREAM_API_BASE = "https://api.pipedream.com"
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Credentials helpers
 # ---------------------------------------------------------------------------
 
 
-@config_cached("pdx_agent_settings")
-def _load_agent_settings() -> dict:
-    """Return ~/.agent_settings.json as a dict, or {} on any error. Cached."""
+def _load_settings(path: Path = DEFAULT_SETTINGS_PATH) -> Dict[str, Any]:
+    """Return the raw agent_settings.json dict, or {} on any error."""
     try:
-        with open(_SANDBOX_METADATA_PATH) as f:
+        with open(path) as f:
             return json.load(f)
-    except Exception:
+    except (OSError, json.JSONDecodeError):
         return {}
 
 
-@config_cached("pdx_sandbox_metadata")
-def _load_sandbox_metadata() -> dict:
-    """Return thread_id from /dev/shm/sandbox_metadata.json, or {} if absent. Cached."""
-    try:
-        with open(_SANDBOX_METADATA_PATH) as f:
-            data = json.load(f)
-        thread_id = data.get("thread_id", "")
-        return {"thread_id": thread_id} if thread_id else {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
-
-
-@config_cached("pdx_ph_metadata")
-def _load_ph_metadata() -> dict:
-    """Return sandbox_id from /dev/shm/ph_metadata.json, or {} if absent. Cached."""
-    try:
-        with open(_PH_METADATA_PATH) as f:
-            data = json.load(f)
-        sandbox_id = data.get("sandbox_id", "")
-        return {"sandbox_id": sandbox_id} if sandbox_id else {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
-
-
-def _get_ninja_user_id() -> str:
+def _load_pipedream_creds(
+    path: Path = DEFAULT_SETTINGS_PATH,
+) -> Optional[Dict[str, str]]:
     """
-    Return the Ninja user UUID for x-ninja-user-id.
-
-    Reads from NINJA_USER_ID env var first, then falls back to
-    ninja_user_id in the cached ~/.agent_settings.json.
-
-    Raises ValueError if neither is set.
+    Return the ``pipedream`` block from agent_settings.json, or None if
+    the block is absent or any required field is missing.
     """
-    value = os.environ.get("NINJA_USER_ID") or _load_agent_settings().get("user_id")
-    if not value:
-        raise ValueError(
-            "NINJA_USER_ID is not set. "
-            "Set it as an environment variable or as 'ninja_user_id' in ~/.agent_settings.json."
-        )
-    return value
+    settings = _load_settings(path)
+    block = settings.get("pipedream")
+    if not block or not isinstance(block, dict):
+        return None
+    required = ("client_id", "client_secret", "project_id", "environment")
+    if any(not block.get(f) for f in required):
+        return None
+    return block
 
 
-def _get_unique_channel() -> str:
+def get_external_user_id(path: Path = DEFAULT_SETTINGS_PATH) -> Optional[str]:
     """
-    Derive x-ninja-integration-channel-id via the active messaging adapter.
+    Derive the Pipedream ``external_user_id`` from agent_settings.json.
 
-    Delegates to the adapter's ``get_unique_channel()`` method so each
-    channel type can derive a stable workspace-scoped identifier from
-    its own identity fields.
-
-    Raises ValueError if the adapter cannot resolve the identifier.
+    Returns ``"<team_id>.<channel_id>"`` (e.g. ``"T0A9Q27KD1T.C0B1K38ETGV"``)
+    or ``None`` if either component is missing.
     """
-    return get_messaging_interface().get_unique_channel()
-
-
-def _http_post(url: str, headers: dict, body: dict) -> dict:
-    """
-    POST JSON body to url with headers.
-
-    Returns the parsed JSON response dict.
-    Raises PipedreamError for HTTP 4xx/5xx responses.
-    """
-    data = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode(errors="replace")
-        raise PipedreamError(exc.code, body_text) from exc
-
-
-def _http_get(url: str) -> dict:
-    """
-    GET url with no auth headers.
-
-    Returns the parsed JSON response dict.
-    Raises PipedreamError for HTTP 4xx/5xx responses.
-    """
-    try:
-        with urllib.request.urlopen(url) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode(errors="replace")
-        raise PipedreamError(exc.code, body_text) from exc
-
-
-def _http_get_authed(url: str, headers: dict) -> dict:
-    """
-    GET url with auth headers.
-
-    Returns the parsed JSON response dict.
-    Raises PipedreamError for HTTP 4xx/5xx responses.
-    """
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode(errors="replace")
-        raise PipedreamError(exc.code, body_text) from exc
-
-
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-
-class PipedreamError(Exception):
-    """Raised when the gateway returns an error response."""
-
-    def __init__(self, status_code: int, message: str) -> None:
-        self.status_code = status_code
-        self.message = message
-        super().__init__(f"HTTP {status_code}: {message}")
+    settings = _load_settings(path)
+    team_id = settings.get("default_team_id")
+    channel_id = settings.get("default_channel_id")
+    if team_id and channel_id:
+        return f"{team_id}.{channel_id}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -238,318 +94,509 @@ class PipedreamError(Exception):
 
 class PipedreamClient:
     """
-    Client for the Pipedream Connect integrations gateway via LiteLLM.
+    Thin wrapper around the official ``pipedream`` Python SDK.
+
+    Credentials are read from ``~/.agent_settings.json["pipedream"]`` so no
+    secrets are hard-coded anywhere.  The ``external_user_id`` is derived
+    automatically from ``default_team_id`` + ``default_channel_id`` in the
+    same settings file.
+
+    Parameters
+    ----------
+    settings_path:
+        Override the agent_settings.json path (useful for testing).
+    external_user_id:
+        Override the derived external user ID.
     """
 
-    def __init__(self) -> None:
-        cfg = get_config()
-        self._api_key = cfg["api_key"]
-        self._base_url = cfg["base_url"].rstrip("/")
-
-    # -- internal ------------------------------------------------------------
-
-    def _base_headers(
+    def __init__(
         self,
-        *,
-        event_id: str | None = None,
-    ) -> dict[str, str]:
-        """Build the required + optional request headers."""
-        headers: dict[str, str] = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-            "x-ninja-user-id": _get_ninja_user_id(),
-            "x-ninja-integration-channel-id": _get_unique_channel(),
-            "x-ninja-feature": "phantom",
-        }
-        thread_id = _load_sandbox_metadata().get("thread_id")
-        if thread_id:
-            headers[HEADER_NINJA_CONVERSATION_ID] = thread_id
-        sandbox_id = _load_ph_metadata().get("sandbox_id")
-        if sandbox_id:
-            headers[HEADER_NINJA_SANDBOX_ID] = sandbox_id
-        if event_id:
-            headers[HEADER_NINJA_EVENT_ID] = event_id
-        return headers
+        settings_path: Path = DEFAULT_SETTINGS_PATH,
+        external_user_id: Optional[str] = None,
+    ) -> None:
+        creds = _load_pipedream_creds(settings_path)
+        if creds is None:
+            raise RuntimeError(
+                "Pipedream credentials not found in ~/.agent_settings.json.\n"
+                "Run ninja at least once so slack_interface.py downloads "
+                "them from S3, or set the credentials manually."
+            )
 
-    # -- public API ----------------------------------------------------------
+        self._creds = creds
+        self._settings_path = settings_path
 
-    def chat_with_tools(
-        self,
-        messages: list[dict[str, Any]],
-        model: str | None = None,
-        *,
-        event_id: str | None = None,
-    ) -> str:
-        """
-        Send a chat completion request with ninja_integrations_gateway_user tools enabled.
-
-        LiteLLM handles the full tool-call loop internally:
-        1. Fetches the tool list from the Pipedream Connect gateway
-        2. Passes tools to the LLM
-        3. Executes any tool calls and folds results back
-        4. Returns the final LLM response
-
-        Parameters
-        ----------
-        messages:
-            OpenAI-format messages list, e.g.
-            [{"role": "user", "content": "What's on my calendar?"}]
-        model:
-            LiteLLM model alias. Defaults to ANTHROPIC_MODEL from settings
-            (via clients.litellm_client.get_config).
-        event_id:
-            Optional traceability header logged by the gateway.
-            x-ninja-conversation-id and x-ninja-sandbox-id are auto-populated
-            from sandbox metadata.
-
-        Returns
-        -------
-        str
-            The final LLM response text (choices[0].message.content).
-
-        Raises
-        ------
-        PipedreamError
-            On HTTP 400 (missing headers), 403 (bad API key), 502 (gateway down).
-        ValueError
-            If NINJA_USER_ID or unique_channel cannot be resolved.
-        """
-        url = f"{self._base_url}/v1/chat/completions"
-        resolved_model = model if model is not None else get_config()["default_model"]
-        headers = self._base_headers(event_id=event_id)
-        body: dict[str, Any] = {
-            "model": resolved_model,
-            "messages": messages,
-            "tools": [
-                {
-                    "type": "mcp",
-                    "server_url": f"litellm_proxy/mcp/{_MCP_USER_SERVER}",
-                    "server_label": _MCP_USER_SERVER,
-                    "require_approval": "never",
-                    "headers": {
-                        "x-ninja-user-id": headers["x-ninja-user-id"],
-                        "x-ninja-integration-channel-id": headers[
-                            "x-ninja-integration-channel-id"
-                        ],
-                    },
-                }
-            ],
-        }
-        response = _http_post(url, headers, body)
-        return response["choices"][0]["message"]["content"]
-
-    def get_connection_link(
-        self,
-        *,
-        event_id: str | None = None,
-    ) -> str:
-        """
-        Get a short-lived Pipedream Connect OAuth connection link for the user.
-
-        No LLM involved. User identity comes from the verified headers.
-        The link expires after 30 minutes. Post it to the user in chat.
-
-        Returns
-        -------
-        str
-            The connection URL, e.g.
-            "https://integrations-gateway.beta.myninja.ai/connections?..."
-
-        Raises
-        ------
-        PipedreamError
-            On HTTP 400 (missing x-ninja-integration-channel-id),
-            403 (API key has no ninja_user_id), or 502 (gateway down).
-        ValueError
-            If NINJA_USER_ID or unique_channel cannot be resolved.
-        """
-        url = f"{self._base_url}{_CONNECTION_LINK_PATH}"
-        headers = self._base_headers(event_id=event_id)
-        response = _http_post(url, headers, body={})
+        # Build the official SDK client — it handles OAuth token refresh.
         try:
-            return response["link"]
-        except KeyError as exc:
-            raise PipedreamError(
-                0,
-                f"Unexpected get_connection_link response — no 'link' key: {response!r}",
+            from pipedream import Pipedream  # type: ignore[import]
+        except ImportError as exc:
+            raise ImportError(
+                "The 'pipedream' package is required. "
+                "Install it with: pip install pipedream"
             ) from exc
 
-    def http_request(
+        self._pd = Pipedream(
+            client_id=creds["client_id"],
+            client_secret=creds["client_secret"],
+            project_id=creds["project_id"],
+            project_environment=creds["environment"],  # "production" | "development"
+        )
+
+        # Resolve external_user_id
+        self._external_user_id: Optional[
+            str
+        ] = external_user_id or get_external_user_id(settings_path)
+
+    # ------------------------------------------------------------------
+    # Public properties
+    # ------------------------------------------------------------------
+
+    @property
+    def external_user_id(self) -> Optional[str]:
+        """The Pipedream external_user_id for this sandbox channel."""
+        return self._external_user_id
+
+    @property
+    def project_id(self) -> str:
+        return self._creds["project_id"]
+
+    @property
+    def environment(self) -> str:
+        return self._creds["environment"]
+
+    # ------------------------------------------------------------------
+    # Tokens
+    # ------------------------------------------------------------------
+
+    def create_connect_token(
         self,
-        app_slug: str,
-        method: str,
-        url: str,
         *,
-        json_body: dict | None = None,
-        raw_body: str | None = None,
-        extra_headers: dict[str, str] | None = None,
-        query: dict[str, str] | None = None,
-        event_id: str | None = None,
-    ) -> dict:
+        external_user_id: Optional[str] = None,
+        expires_in: Optional[int] = None,
+        allowed_origins: Optional[List[str]] = None,
+        webhook_uri: Optional[str] = None,
+        success_redirect_uri: Optional[str] = None,
+        error_redirect_uri: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Make a raw authenticated HTTP request through the Pipedream Connect proxy.
+        Generate a short-lived Connect token for this user.
 
-        The gateway uses x-ninja-user-id + x-ninja-integration-channel-id to resolve
-        the user's Pipedream credentials for app_slug and proxies the request upstream.
-
-        Parameters
-        ----------
-        app_slug:
-            The integration app slug (e.g. ``"github"``, ``"gmail"``).
-        method:
-            HTTP method (``"GET"``, ``"POST"``, ``"PUT"``, ``"PATCH"``, ``"DELETE"``).
-        url:
-            Upstream URL (e.g. ``"https://api.github.com/user"``).
-        json_body:
-            Optional JSON-serialisable dict to send as the request body.
-            Mutually exclusive with ``raw_body``.
-        raw_body:
-            Optional raw string body. Mutually exclusive with ``json_body``.
-        extra_headers:
-            Optional dict of additional headers to forward upstream.
-        query:
-            Optional dict of query-string parameters to append to the URL.
-        event_id:
-            Optional traceability header logged by the gateway.
-            x-ninja-conversation-id and x-ninja-sandbox-id are auto-populated
-            from sandbox metadata.
+        The token is used to authenticate client-side requests (e.g. the
+        integrations dashboard) on behalf of the end user.  Defaults to a
+        4-hour TTL.
 
         Returns
         -------
-        dict
-            The full response dict from the gateway
-            (expected keys: ``status``, ``headers``, ``body``).
-
-        Raises
-        ------
-        PipedreamError
-            On HTTP 400 (missing headers), 403 (bad API key), 502 (gateway down).
-        ValueError
-            If NINJA_USER_ID or unique_channel cannot be resolved.
+        dict with ``token`` and ``expires_at`` keys.
         """
-        endpoint = f"{self._base_url}{_HTTP_PROXY_PATH}"
-        headers = self._base_headers(event_id=event_id)
-        body: dict[str, Any] = {
-            "app_slug": app_slug,
-            "method": method.upper(),
-            "url": url,
+        user_id = external_user_id or self._external_user_id
+        if not user_id:
+            raise ValueError(
+                "external_user_id is required to create a connect token. "
+                "Set default_team_id and default_channel_id in agent_settings.json."
+            )
+
+        kwargs: Dict[str, Any] = {"external_user_id": user_id}
+        if expires_in is not None:
+            kwargs["expires_in"] = expires_in
+        if allowed_origins is not None:
+            kwargs["allowed_origins"] = allowed_origins
+        if webhook_uri is not None:
+            kwargs["webhook_uri"] = webhook_uri
+        if success_redirect_uri is not None:
+            kwargs["success_redirect_uri"] = success_redirect_uri
+        if error_redirect_uri is not None:
+            kwargs["error_redirect_uri"] = error_redirect_uri
+
+        response = self._pd.tokens.create(**kwargs)
+        return {"token": response.token, "expires_at": response.expires_at}
+
+    # ------------------------------------------------------------------
+    # Apps catalog
+    # ------------------------------------------------------------------
+
+    def list_apps_page(
+        self,
+        *,
+        q: Optional[str] = None,
+        limit: int = 100,
+        after: Optional[str] = None,
+        sort_key: Optional[str] = None,
+        sort_direction: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch one page of apps from the Pipedream catalog.
+
+        Returns dict with ``apps`` (list) and ``next_cursor`` (str | None).
+        Pass ``next_cursor`` as ``after`` on subsequent calls to page through.
+        """
+        pager = self._pd.apps.list(
+            after=after,
+            limit=limit,
+            q=q or None,
+            sort_key=sort_key,
+            sort_direction=sort_direction,
+        )
+        page = next(pager.iter_pages(), None)
+        if page is None:
+            return {"apps": [], "next_cursor": None, "total_count": None}
+
+        apps = [_app_to_dict(a) for a in (page.items or [])]
+        page_info = page.response.page_info
+        next_cursor = page_info.end_cursor if page.has_next else None
+        return {
+            "apps": apps,
+            "next_cursor": next_cursor,
+            "total_count": page_info.total_count,
         }
-        if json_body is not None:
-            body["json"] = json_body
-        elif raw_body is not None:
-            body["data"] = raw_body
-        if extra_headers:
-            body["headers"] = extra_headers
-        if query:
-            body["query"] = query
-
-        return _http_post(endpoint, headers, body)
-
-    def list_accounts(self) -> list[dict[str, Any]]:
-        """
-        List connected Pipedream accounts for the user.
-
-        Returns all integrations the user has onboarded, grouped by app slug
-        on the gateway side.
-
-        Returns
-        -------
-        list[dict]
-            List of account dicts with keys: ``id``, ``app_slug``, ``app_name``,
-            ``healthy``, ``created_at``, ``updated_at``.
-
-        Raises
-        ------
-        PipedreamError
-            On HTTP 4xx/5xx from the gateway.
-        ValueError
-            If NINJA_USER_ID or unique_channel cannot be resolved.
-        """
-        url = f"{self._base_url}{_ACCOUNTS_PATH}"
-        headers = self._base_headers()
-        response = _http_get_authed(url, headers)
-        return response.get("accounts", [])
 
     def list_apps(
         self,
         *,
-        q: str | None = None,
+        q: Optional[str] = None,
         limit: int = 50,
-    ) -> list[dict[str, Any]]:
+        has_actions: Optional[bool] = None,
+        has_triggers: Optional[bool] = None,
+        sort_key: Optional[str] = None,
+        sort_direction: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Browse the Pipedream app catalog.
+        List apps from the Pipedream catalog.
 
         Parameters
         ----------
         q:
-            Optional search query (e.g. ``"github"``, ``"google sheets"``).
+            Full-text search query (e.g. "github", "google sheets").
         limit:
             Maximum number of results to return (default 50).
+        has_actions:
+            Filter to only apps with actions.
+        has_triggers:
+            Filter to only apps with triggers.
+        sort_key:
+            One of ``"name"``, ``"name_slug"``, ``"featured_weight"``.
+        sort_direction:
+            ``"asc"`` or ``"desc"``.
 
         Returns
         -------
-        list[dict]
-            List of app dicts with keys: ``name_slug``, ``name``, ``description``,
-            ``auth_type``, ``categories``.
-
-        Raises
-        ------
-        PipedreamError
-            On HTTP 4xx/5xx from the gateway.
-        ValueError
-            If NINJA_USER_ID or unique_channel cannot be resolved.
+        List of app dicts with keys: id, name, name_slug, img_src,
+        description, auth_type, categories, featured_weight.
         """
-        params: dict[str, str] = {"limit": str(limit)}
+        kwargs: Dict[str, Any] = {}
         if q:
-            params["q"] = q
-        query_string = urllib.parse.urlencode(params)
-        url = f"{self._base_url}{_APPS_PATH}?{query_string}"
-        headers = self._base_headers()
-        response = _http_get_authed(url, headers)
-        return response.get("apps", [])
+            kwargs["q"] = q
+        if limit:
+            kwargs["limit"] = limit
+        if has_actions is not None:
+            kwargs["has_actions"] = has_actions
+        if has_triggers is not None:
+            kwargs["has_triggers"] = has_triggers
+        if sort_key is not None:
+            kwargs["sort_key"] = sort_key
+        if sort_direction is not None:
+            kwargs["sort_direction"] = sort_direction
+
+        pager = self._pd.apps.list(**kwargs)
+        results: List[Dict[str, Any]] = []
+        for app in pager:
+            results.append(_app_to_dict(app))
+            if len(results) >= limit:
+                break
+        return results
+
+    # ------------------------------------------------------------------
+    # Connected accounts
+    # ------------------------------------------------------------------
+
+    def list_accounts(
+        self,
+        *,
+        external_user_id: Optional[str] = None,
+        app: Optional[str] = None,
+        limit: int = 100,
+        include_credentials: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        List connected accounts for a given external user (defaults to this
+        sandbox's ``external_user_id``).
+
+        Parameters
+        ----------
+        external_user_id:
+            Override the user.  Defaults to the sandbox channel user.
+        app:
+            Filter by app slug or ID (e.g. ``"slack"``, ``"github"``).
+        limit:
+            Maximum results.
+        include_credentials:
+            Include OAuth credentials in the response (sensitive — only use
+            server-side).
+
+        Returns
+        -------
+        List of account dicts.
+        """
+        user_id = external_user_id or self._external_user_id
+        kwargs: Dict[str, Any] = {}
+        if user_id:
+            kwargs["external_user_id"] = user_id
+        if app:
+            kwargs["app"] = app
+        if limit:
+            kwargs["limit"] = limit
+        if include_credentials:
+            kwargs["include_credentials"] = True
+
+        pager = self._pd.accounts.list(**kwargs)
+        results: List[Dict[str, Any]] = []
+        for account in pager:
+            results.append(_account_to_dict(account))
+            if len(results) >= limit:
+                break
+        return results
+
+    def delete_account(self, account_id: str) -> bool:
+        """
+        Delete a connected account by ID.
+
+        Returns True on success.
+        """
+        try:
+            self._pd.accounts.delete(id=account_id)
+            return True
+        except Exception as exc:
+            print(f"⚠️  delete_account({account_id}): {exc}", file=sys.stderr)
+            return False
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def list_actions(
+        self,
+        app: str,
+        *,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        List available actions for an app.
+
+        Parameters
+        ----------
+        app:
+            The app slug (e.g. ``"slack"``, ``"github"``).
+        limit:
+            Maximum results.
+
+        Returns
+        -------
+        List of action dicts with keys: key, name, description, type.
+        """
+        import inspect  # noqa: PLC0415
+
+        # SDK uses paginated list with `component_type` filter
+        try:
+            pager = self._pd.actions.list(app=app, limit=limit)
+        except TypeError:
+            # Older SDK signature fallback
+            pager = self._pd.actions.list(app=app)
+
+        results: List[Dict[str, Any]] = []
+        for action in pager:
+            results.append(
+                {
+                    "key": getattr(action, "key", None),
+                    "name": getattr(action, "name", None),
+                    "description": getattr(action, "description", None),
+                    "type": getattr(action, "type", None),
+                    "app_slug": app,
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
 
     def run_action(
         self,
         action_key: str,
         *,
-        props: dict[str, Any] | None = None,
-        event_id: str | None = None,
-    ) -> dict[str, Any]:
+        external_user_id: Optional[str] = None,
+        configured_props: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
-        Execute a Pipedream action on behalf of the user.
+        Execute a Pipedream action for this user.
 
         Parameters
         ----------
         action_key:
-            The component key, e.g. ``"github-create-issue"``.
-        props:
-            Dict of prop name → value to pass to the action.
-        event_id:
-            Optional traceability header logged by the gateway.
+            The component key, e.g. ``"slack-send-message"``.
+        external_user_id:
+            Override the user.  Defaults to the sandbox channel user.
+        configured_props:
+            A dict of prop name → value to pass to the action.
 
         Returns
         -------
-        dict
-            The action run result from the gateway (key: ``result``).
-
-        Raises
-        ------
-        PipedreamError
-            On HTTP 4xx/5xx from the gateway.
-        ValueError
-            If NINJA_USER_ID or unique_channel cannot be resolved.
+        The action run result as a dict.
         """
-        url = f"{self._base_url}{_RUN_ACTION_PATH}"
-        headers = self._base_headers(event_id=event_id)
-        body: dict[str, Any] = {"action_key": action_key, "props": props or {}}
-        return _http_post(url, headers, body)
+        user_id = external_user_id or self._external_user_id
+        if not user_id:
+            raise ValueError("external_user_id is required to run an action.")
 
-    def check_health(self) -> dict:
-        """
-        GET /ninja/integrations-gateway/health — no auth required.
+        response = self._pd.actions.run(
+            id=action_key,
+            external_user_id=user_id,
+            configured_props=configured_props or {},
+        )
+        # Normalise — SDK returns a typed object; convert to plain dict
+        if hasattr(response, "__dict__"):
+            return {k: v for k, v in vars(response).items() if not k.startswith("_")}
+        return {"result": str(response)}
 
-        Returns the parsed JSON response from the Pipedream Connect
-        gateway health endpoint.
-        """
-        url = f"{self._base_url}{_HEALTH_PATH}"
-        return _http_get(url)
+
+# ---------------------------------------------------------------------------
+# Serialisation helpers
+# ---------------------------------------------------------------------------
+
+
+def _app_to_dict(app: Any) -> Dict[str, Any]:
+    return {
+        "id": getattr(app, "id", None),
+        "name": getattr(app, "name", None),
+        "name_slug": getattr(app, "name_slug", None),
+        "img_src": getattr(app, "img_src", None),
+        "description": getattr(app, "description", None),
+        "auth_type": getattr(app, "auth_type", None),
+        "categories": list(getattr(app, "categories", None) or []),
+        "featured_weight": getattr(app, "featured_weight", None),
+        "has_components": getattr(app, "has_components", None),
+    }
+
+
+def _account_to_dict(account: Any) -> Dict[str, Any]:
+    app_obj = getattr(account, "app", None)
+    app_info: Optional[Dict[str, Any]] = None
+    if app_obj is not None:
+        app_info = {
+            "id": getattr(app_obj, "id", None),
+            "name": getattr(app_obj, "name", None),
+            "name_slug": getattr(app_obj, "name_slug", None),
+            "img_src": getattr(app_obj, "img_src", None),
+            "auth_type": getattr(app_obj, "auth_type", None),
+            "description": getattr(app_obj, "description", None),
+            "categories": list(getattr(app_obj, "categories", None) or []),
+        }
+    return {
+        "id": getattr(account, "id", None),
+        "name": getattr(account, "name", None),
+        "external_id": getattr(account, "external_id", None),
+        "healthy": getattr(account, "healthy", None),
+        "dead": getattr(account, "dead", None),
+        "app": app_info,
+        "created_at": str(getattr(account, "created_at", "") or ""),
+        "updated_at": str(getattr(account, "updated_at", "") or ""),
+        "error": getattr(account, "error", None),
+        "expires_at": str(getattr(account, "expires_at", "") or ""),
+        "last_refreshed_at": str(getattr(account, "last_refreshed_at", "") or ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _cli_status(pd: PipedreamClient) -> None:
+    creds = _load_pipedream_creds(pd._settings_path)
+    settings = _load_settings(pd._settings_path)
+    print("✅ Pipedream credentials loaded")
+    print(f"   project_id     : {creds['project_id']}")
+    print(f"   environment    : {creds['environment']}")
+    print(f"   external_user_id: {pd.external_user_id}")
+    print()
+    print("   Slack identity:")
+    print(f"     team_id      : {settings.get('default_team_id', '(not set)')}")
+    print(f"     channel_id   : {settings.get('default_channel_id', '(not set)')}")
+    print(f"     workspace    : {settings.get('workspace', '(not set)')}")
+    print(f"     channel      : {settings.get('default_channel', '(not set)')}")
+
+
+def _cli_token(pd: PipedreamClient) -> None:
+    result = pd.create_connect_token()
+    print(json.dumps(result, indent=2, default=str))
+
+
+def _cli_apps(pd: PipedreamClient, args: Any) -> None:
+    apps = pd.list_apps(
+        q=getattr(args, "q", None) or None,
+        limit=getattr(args, "limit", None) or 20,
+    )
+    for app in apps:
+        cats = ", ".join(app["categories"]) if app["categories"] else ""
+        print(f"  {app['name_slug']:30s}  {app['name']:30s}  {cats}")
+    print(f"\n  ({len(apps)} results)")
+
+
+def _cli_accounts(pd: PipedreamClient, args: Any) -> None:
+    accounts = pd.list_accounts(
+        app=getattr(args, "app", None) or None,
+    )
+    if not accounts:
+        user_id = pd.external_user_id or "(unknown)"
+        print(f"No connected accounts found for user {user_id!r}.")
+        print("Use the integrations dashboard to connect apps.")
+        return
+    for acct in accounts:
+        app_name = (acct.get("app") or {}).get("name", "?")
+        healthy = "✅" if acct.get("healthy") else "⚠️ "
+        print(f"  {healthy}  {app_name:25s}  id={acct['id']}  name={acct['name']}")
+    print(f"\n  ({len(accounts)} accounts)")
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    import argparse  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(
+        prog="python -m utils.pipedream",
+        description="Pipedream Connect CLI for Ninja",
+    )
+    sub = parser.add_subparsers(dest="cmd")
+
+    sub.add_parser("status", help="Show credentials and identity")
+    sub.add_parser("token", help="Create a Connect token for this user")
+
+    apps_p = sub.add_parser("apps", help="List available apps")
+    apps_p.add_argument("--q", default="", help="Search query")
+    apps_p.add_argument("--limit", type=int, default=20, help="Max results")
+
+    accounts_p = sub.add_parser("accounts", help="List connected accounts")
+    accounts_p.add_argument("--app", default="", help="Filter by app slug")
+
+    args = parser.parse_args(argv)
+    if not args.cmd:
+        parser.print_help()
+        sys.exit(0)
+
+    try:
+        pd = PipedreamClient()
+    except RuntimeError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
+    except ImportError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "status":
+        _cli_status(pd)
+    elif args.cmd == "token":
+        _cli_token(pd)
+    elif args.cmd == "apps":
+        _cli_apps(pd, args)
+    elif args.cmd == "accounts":
+        _cli_accounts(pd, args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

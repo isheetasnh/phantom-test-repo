@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import socket
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -115,16 +116,15 @@ def check_github_health() -> int:
         return 0
 
     if result["status"] == "missing":
-        status_message = "Github token not found"
+        print("🔑 Github token not found", flush=True)
     else:
-        status_message = (
-            f"GitHub token ERROR (status={result['status']}"
+        print(
+            f"🔑 GitHub token ERROR (status={result['status']}"
             f"{', ' + result['message'] if result.get('message') else ''})",
+            flush=True,
         )
-
-    print(status_message, flush=True)
     _emit_error(
-        "ninja github health", status_message, message=result.get("message", "")
+        "ninja github health", result["status"], message=result.get("message", "")
     )
     return 1
 
@@ -142,14 +142,11 @@ def check_litellm_health() -> int:
     base_url = cfg.get("base_url")
 
     if not api_key or not base_url:
-        error_message = (
-            "LiteLLM not configured (missing api_key/base_url in settings.json)"
-        )
         print(
-            error_message,
+            "🤖 LiteLLM not configured (missing api_key/base_url in settings.json)",
             flush=True,
         )
-        _emit_error("ninja litellm health", error_message, message=error_message)
+        _emit_error("ninja litellm health", "missing")
         return 1
 
     req = urllib.request.Request(
@@ -160,41 +157,46 @@ def check_litellm_health() -> int:
 
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            status = (
-                "ok"
-                if resp.status < 300 or resp.status == 402  # 402 means payment required
-                else f"http_{resp.status}"
-            )
+            status = "ok" if resp.status == 200 else f"http_{resp.status}"
     except urllib.error.HTTPError as e:
         status = f"http_{e.code}"
     except Exception as e:
-        status = str(e)[:120]
+        status = str(e)
 
     if status == "ok":
         print("🤖 LiteLLM OK", flush=True)
         return 0
-    _emit_error("ninja litellm health", status, message=status)
+    _emit_error("ninja litellm health", status)
     print(f"🤖 LiteLLM ERROR (status={status})", flush=True)
     return 1
 
 
 def check_pipedream_health() -> int:
-    """Emit ``ninja pipedream health`` (error=1) only if the Pipedream probe fails.
+    """Emit ``ninja pipedream health`` (error=1) only if the OAuth probe fails.
 
-    GETs /ninja/integrations-gateway/health — a lightweight endpoint that
-    requires no auth and has no side effects.
-    Returns 1 on error, 0 on success.
+    Instantiates PipedreamClient and makes a minimal catalog call to force the
+    OAuth exchange. Returns 1 on error, 0 on success.
     """
     try:
-        pdx = PipedreamClient()
-        pdx.check_health()
-        print("🔌 Pipedream OK", flush=True)
-        return 0
-    except Exception as e:
-        err = str(e)[:120]
-        _emit_error("ninja pipedream health", "error", message=err)
-        print(f"🔌 Pipedream ERROR ({err})", flush=True)
+        client = PipedreamClient()
+    except RuntimeError:
+        print("🔌 Pipedream credentials not found", flush=True)
+        _emit_error("ninja pipedream health", "missing")
         return 1
+    except Exception as e:
+        print(f"🔌 Pipedream not available: {e}", flush=True)
+        _emit_error("ninja pipedream health", "error")
+        return 1
+
+    try:
+        client.list_apps(limit=1)
+    except Exception as e:
+        _emit_error("ninja pipedream health", str(e)[:120])
+        print(f"🔌 Pipedream ERROR ({str(e)[:120]})", flush=True)
+        return 1
+
+    print("🔌 Pipedream OK", flush=True)
+    return 0
 
 
 def _fetch_egress_ip(proxy: str | None) -> str | None:
@@ -222,22 +224,20 @@ def check_vpn_health() -> int:
         with socket.create_connection((PSIPHON_HOST, PSIPHON_PORT), timeout=5):
             pass
     except OSError as e:
-        _emit_error("ninja vpn health", "VPN proxy_down", message=str(e)[:120])
-        print(f"VPN ERROR (proxy {PSIPHON_PROXY} not listening: {e})", flush=True)
+        _emit_error("ninja vpn health", "proxy_down", message=str(e)[:120])
+        print(f"🛡️ VPN ERROR (proxy {PSIPHON_PROXY} not listening: {e})", flush=True)
         return 1
 
     proxied_ip = _fetch_egress_ip(PSIPHON_PROXY)
     if not proxied_ip:
-        error_message = "VPN ERROR (proxy up but no route to internet)"
-        _emit_error("ninja vpn health", error_message, message=error_message)
-        print(error_message, flush=True)
+        _emit_error("ninja vpn health", "no_route")
+        print("🛡️ VPN ERROR (proxy up but no route to internet)", flush=True)
         return 1
 
     direct_ip = _fetch_egress_ip(None)
     if direct_ip and direct_ip == proxied_ip:
-        error_message = "VPN ERROR (egress IP == direct IP; not tunneling)"
-        _emit_error("ninja vpn health", error_message, message=error_message)
-        print(error_message, flush=True)
+        _emit_error("ninja vpn health", "not_tunneled")
+        print("🛡️ VPN ERROR (egress IP == direct IP; not tunneling)", flush=True)
         return 1
 
     print("🛡️ VPN OK", flush=True)
@@ -255,9 +255,7 @@ def check_monitor_health() -> int:
         with open(MONITOR_HEARTBEAT_FILE) as f:
             last_run_ts = int(f.read().strip())
     except (OSError, ValueError) as e:
-        _emit_error(
-            "ninja monitor health", "Monitor heartbeat missing", message=str(e)[:120]
-        )
+        _emit_error("ninja monitor health", "missing", message=str(e)[:120])
         print(
             f"📡 Monitor heartbeat missing ({MONITOR_HEARTBEAT_FILE}: {e})",
             flush=True,
@@ -266,9 +264,7 @@ def check_monitor_health() -> int:
 
     age_seconds = int(time.time()) - last_run_ts
     if age_seconds > MONITOR_STALE_AFTER:
-        _emit_error(
-            "ninja monitor health", "Monitor heartbeat stale", age_seconds=age_seconds
-        )
+        _emit_error("ninja monitor health", "stale", age_seconds=age_seconds)
         print(
             f"📡 Monitor heartbeat STALE "
             f"(age={age_seconds}s > {MONITOR_STALE_AFTER}s)",
