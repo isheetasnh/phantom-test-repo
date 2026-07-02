@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sys
@@ -261,3 +262,46 @@ def set_reaction(
         "reply_to_id": reply_to_id,
         "reaction_type": reaction,
     }
+
+
+def resolve_share_download_url(url: str, token: str) -> str:
+    """Resolve a SharePoint sharing/content URL to a pre-authenticated download URL.
+
+    Teams attachments live in SharePoint, and a Microsoft Graph token cannot
+    fetch a ``*.sharepoint.com`` URL directly (wrong audience → 401). The Graph
+    ``/shares/{id}/driveItem`` endpoint turns a sharing URL into a DriveItem whose
+    ``@microsoft.graph.downloadUrl`` is a short-lived, pre-authenticated link that
+    needs no auth header.
+
+    Raises:
+        TeamsAPIError: if Graph returns a non-2xx response or the payload does
+            not contain ``@microsoft.graph.downloadUrl``.
+    """
+    assert url is not None, "url cannot be None"
+    assert token is not None, "token cannot be None"
+    # Graph share-id encoding: "u!" + base64url(url), '=' padding stripped.
+    encoded = base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii").rstrip("=")
+    share_id = "u!" + encoded
+    status, payload, _ = make_graph_api_request(
+        "GET",
+        f"/shares/{_quote(share_id)}/driveItem",
+        token=token,
+        query={"$select": "id,@microsoft.graph.downloadUrl"},
+    )
+    payload = _ensure_ok(status, payload)
+    if not isinstance(payload, dict):
+        raise TeamsAPIError(status, payload)
+
+    resolved = _str_or_none(payload.get("@microsoft.graph.downloadUrl"))
+    if not resolved:
+        raise TeamsAPIError(
+            status,
+            {
+                "error": {
+                    "code": "missing_download_url",
+                    "message": "Graph response missing @microsoft.graph.downloadUrl",
+                },
+                "payload": payload,
+            },
+        )
+    return resolved
