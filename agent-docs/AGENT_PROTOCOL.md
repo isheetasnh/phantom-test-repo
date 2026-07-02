@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document defines the communication standards and protocols for agent interaction within the team Microsoft Teams channel using the `messaging/teams/interface.py` CLI tool.
+This document defines the communication standards and protocols for agent interaction within the team Slack channel using the `messaging/slack/interface.py` CLI tool.
 
 ## 🚨 CRITICAL: Workflow
 
@@ -11,10 +11,10 @@ This document defines the communication standards and protocols for agent intera
 │                     TASK EXECUTION PROTOCOL                              │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│   1. Agent receives task via Microsoft Teams or --task flag                        │
+│   1. Agent receives task via Slack or --task flag                        │
 │   2. Agent reads spec: cat agent-docs/NINJA_SPEC.md                   │
 │   3. Agent executes task using browser toolkit                           │
-│   4. Agent reports results back to Microsoft Teams                                 │
+│   4. Agent reports results back to Slack                                 │
 │   5. Agent updates memory: memory/ninja_memory.md                     │
 │                                                                          │
 │   WAKE UP INSTRUCTION                                                    │
@@ -24,26 +24,26 @@ This document defines the communication standards and protocols for agent intera
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Microsoft Teams Interface Tool
+## Slack Interface Tool
 
-All agents communicate via the `messaging/teams/interface.py` CLI tool. See [TEAMS_INTERFACE.md](TEAMS_INTERFACE.md) for complete documentation.
+All agents communicate via the `messaging/slack/interface.py` CLI tool. See [SLACK_INTERFACE.md](SLACK_INTERFACE.md) for complete documentation.
 
 ### Quick Reference
 
 ```bash
 # Configure your agent identity (do this first!)
-python messaging/teams/interface.py config --set-agent <your-agent-name>
-python messaging/teams/interface.py config --set-channel "#your-channel"
+python messaging/slack/interface.py config --set-agent <your-agent-name>
+python messaging/slack/interface.py config --set-channel "#your-channel"
 
 # Read messages from the channel
-python messaging/teams/interface.py read              # Last 50 messages
-python messaging/teams/interface.py read -l 100       # Last 100 messages
+python messaging/slack/interface.py read              # Last 50 messages
+python messaging/slack/interface.py read -l 100       # Last 100 messages
 
 # Send messages as configured agent
-python messaging/teams/interface.py say "Your message here"
+python messaging/slack/interface.py say "Your message here"
 
 # Upload files (uploads with agent impersonation)
-python messaging/teams/interface.py upload design.png --title "Design Mockup"
+python messaging/slack/interface.py upload design.png --title "Design Mockup"
 ```
 
 ## Channel Structure
@@ -72,14 +72,14 @@ Session updates follow a **single-thread pattern**:
 
 ```bash
 # Post top-level session update message
-python messaging/teams/interface.py say "Session 5 Update 🧵"
+python messaging/slack/interface.py say "Session 5 Update 🧵"
 ```
 
 **Step 2 — Same agent immediately replies in the thread with their update:**
 
 ```bash
 # Reply to the thread with your status (use the timestamp from step 1)
-python messaging/teams/interface.py say "✅ Completed homepage mockup, pushed to designs/ folder
+python messaging/slack/interface.py say "✅ Completed homepage mockup, pushed to designs/ folder
 🔄 Starting mobile responsive variants
 🚧 No blockers" -t <thread_timestamp>
 ```
@@ -88,7 +88,7 @@ python messaging/teams/interface.py say "✅ Completed homepage mockup, pushed t
 
 ```bash
 # Other agents find the "Session N Update 🧵" thread and reply under it
-python messaging/teams/interface.py say "✅ Implemented API endpoints for user auth
+python messaging/slack/interface.py say "✅ Implemented API endpoints for user auth
 🔄 Working on frontend integration
 🚧 Waiting on design specs for settings page" -t <thread_timestamp>
 ```
@@ -97,7 +97,7 @@ python messaging/teams/interface.py say "✅ Implemented API endpoints for user 
 
 ### Message Length
 
-- **Keep all Microsoft Teams messages SHORT** — 2-4 sentences max
+- **Keep all Slack messages SHORT** — 2-4 sentences max
 - No walls of text. Be direct and concise
 - If detail is needed, put it in a thread reply or link to a GitHub issue/PR
 
@@ -114,7 +114,7 @@ Stakeholders are human team members who provide direction, approve work, and can
 #### Task Acknowledgment
 
 ```bash
-python messaging/teams/interface.py say "**Task Received**
+python messaging/slack/interface.py say "**Task Received**
 
 I've received the browser automation task. Here's my plan:
 
@@ -131,7 +131,7 @@ Starting now!"
 ```bash
 # Always share the VNC link so stakeholders can watch the browser live.
 # Use ninja/vnc.py to generate the auto-connect URL (no password needed).
-python messaging/teams/interface.py say "**🖥️ Live Browser View**
+python messaging/slack/interface.py say "**🖥️ Live Browser View**
 
 Watch the browser automation in real-time:
 $(python -c 'from browser.vnc import get_vnc_url; print(get_vnc_url())')
@@ -147,7 +147,7 @@ Click the link above to view the browser session live — no install needed."
 #### Task Completion
 
 ```bash
-python messaging/teams/interface.py say "**Task Complete**
+python messaging/slack/interface.py say "**Task Complete**
 
 Browser automation task finished. Results:
 - Screenshots attached
@@ -162,14 +162,14 @@ Let me know if you need anything else!"
 
 ```bash
 # The FIRST agent to update posts this as a top-level message
-python messaging/teams/interface.py say "Session 3 Update 🧵"
+python messaging/slack/interface.py say "Session 3 Update 🧵"
 ```
 
 #### Session Update — Agent Reply (in thread)
 
 ```bash
 # ALL agents reply in the thread using -t <timestamp>
-python messaging/teams/interface.py say "✅ Completed: [what you finished]
+python messaging/slack/interface.py say "✅ Completed: [what you finished]
 🔄 In Progress: [current work]
 🚧 Blockers: [any blockers, or None]" -t <session_thread_ts>
 ```
@@ -179,18 +179,18 @@ python messaging/teams/interface.py say "✅ Completed: [what you finished]
 #### Asking for Help (reply in relevant thread)
 
 ```bash
-python messaging/teams/interface.py say "Quick question about [topic]: [details]" -t <reply_to_id>
+python messaging/slack/interface.py say "Quick question about [topic]: [details]" -t <thread_ts>
 ```
 
 #### Sharing Work
 
 ```bash
-python messaging/teams/interface.py say "**[Work Type] Update**
+python messaging/slack/interface.py say "**[Work Type] Update**
 
 [Brief description]
 
 📎 GitHub: [link to PR/issue/commit]
-📎 Microsoft Teams: File uploaded in thread below
+📎 Slack: File uploaded in thread below
 
 @[relevant_agent] — ready for review"
 ```
@@ -198,7 +198,7 @@ python messaging/teams/interface.py say "**[Work Type] Update**
 #### Reporting Blockers
 
 ```bash
-python messaging/teams/interface.py say "🚨 **Blocker**
+python messaging/slack/interface.py say "🚨 **Blocker**
 
 Blocked on [task]:
 - **Issue**: [Description]
@@ -211,7 +211,7 @@ Blocked on [task]:
 #### Work Summary (reply in session thread)
 
 ```bash
-python messaging/teams/interface.py say "📊 **Cycle Summary**
+python messaging/slack/interface.py say "📊 **Cycle Summary**
 
 - [Accomplishment 1]
 - [Accomplishment 2]
@@ -232,7 +232,7 @@ python messaging/teams/interface.py say "📊 **Cycle Summary**
 ### 2. Mention Protocol
 
 - Mention relevant agents when their input is needed
-- Report escalations and blockers in Microsoft Teams
+- Report escalations and blockers in Slack
 - Use `@channel` sparingly (emergencies only)
 
 ### 3. Response Expectations
@@ -251,44 +251,44 @@ python messaging/teams/interface.py say "📊 **Cycle Summary**
    - Documents → `docs/` or `agent-docs/` folder
    - Test Reports → `reports/` folder
 
-2. **Upload to Microsoft Teams** — so the team can view files immediately
+2. **Upload to Slack** — so the team can view files immediately
 
    ```bash
-   # Upload file to Microsoft Teams (uses agent impersonation)
-   python messaging/teams/interface.py upload path/to/file.png --title "Design Mockup v2"
+   # Upload file to Slack (uses agent impersonation)
+   python messaging/slack/interface.py upload path/to/file.png --title "Design Mockup v2"
 
    # Upload to a specific thread
-   python messaging/teams/interface.py upload report.pdf --title "Test Report" -t <reply_to_id>
+   python messaging/slack/interface.py upload report.pdf --title "Test Report" -t <thread_ts>
    ```
 
 3. **Post the GitHub link** — reference where the file lives in the repo
    ```bash
-   python messaging/teams/interface.py say "📎 Design mockup committed: [GitHub link]
+   python messaging/slack/interface.py say "📎 Design mockup committed: [GitHub link]
    File also uploaded in thread above for quick preview"
    ```
 
-> **Key rule:** Files should be accessible both in Microsoft Teams (for quick viewing) AND in the repo (for version control). Always do both.
+> **Key rule:** Files should be accessible both in Slack (for quick viewing) AND in the repo (for version control). Always do both.
 
 ### 5. Audio / Voice Message Protocol
 
-Microsoft Teams users (and other agents) may send **audio messages** or **voice clips** in channels and threads.
+Slack users (and other agents) may send **audio messages** or **voice clips** in channels and threads.
 
-**When you encounter an audio/voice message in Microsoft Teams:**
+**When you encounter an audio/voice message in Slack:**
 
 1. **Detect the audio attachment** — check the message for audio/voice file attachments
 2. **Transcribe using the channel-specific transcriber**:
 
    ```bash
-   python messaging/teams/transcribe.py
+   python messaging/slack/transcribe.py
    ```
 
 3. **Process the transcript** — treat the transcribed text as if it were a regular text message and respond accordingly
 4. **Acknowledge the voice message** — when replying, mention that you received and transcribed the voice message:
    ```bash
-   python messaging/teams/interface.py say "🎤 I listened to your voice message. Here's my response: ..." -t <reply_to_id>
+   python messaging/slack/interface.py say "🎤 I listened to your voice message. Here's my response: ..." -t <thread_ts>
    ```
 
-> **Key rule:** Never ignore audio/voice messages. Always transcribe them using `python messaging/teams/transcribe.py` and respond to their content just like any text message. If transcription fails, acknowledge the voice message and ask the sender to provide a text version.
+> **Key rule:** Never ignore audio/voice messages. Always transcribe them using `python messaging/slack/transcribe.py` and respond to their content just like any text message. If transcription fails, acknowledge the voice message and ask the sender to provide a text version.
 
 ## Interaction Patterns
 
@@ -296,8 +296,8 @@ Microsoft Teams users (and other agents) may send **audio messages** or **voice 
 
 ```
 Direction Flow:
-Stakeholder ──task──▶ Ninja (via Microsoft Teams or --task flag)
-Ninja ──results──▶ Stakeholder (via Microsoft Teams)
+Stakeholder ──task──▶ Ninja (via Slack or --task flag)
+Ninja ──results──▶ Stakeholder (via Slack)
 ```
 
 ### Stakeholders → Agents
@@ -316,21 +316,21 @@ Stakeholders can:
 ### Issue References
 
 ```
-When referencing GitHub issues in Microsoft Teams:
+When referencing GitHub issues in Slack:
 "Working on #42 - [Issue Title]"
 ```
 
 ### PR Notifications
 
 ```bash
-python messaging/teams/interface.py say "🔀 PR Ready: [Title] - [GitHub Link]
+python messaging/slack/interface.py say "🔀 PR Ready: [Title] - [GitHub Link]
 Ready for review"
 ```
 
 ### Code Review Comments
 
 ```bash
-python messaging/teams/interface.py say "📝 Review feedback on PR #[number]:
+python messaging/slack/interface.py say "📝 Review feedback on PR #[number]:
 - [Comment 1]
 - [Comment 2]
 Please address these"
@@ -350,7 +350,7 @@ If an agent fails to respond during sync:
 ### Integration Failure
 
 ```
-If Microsoft Teams is unavailable:
+If Slack is unavailable:
 1. Agent logs the failure
 2. Retries with exponential backoff
 3. Stores pending messages for later delivery
@@ -368,7 +368,7 @@ If Microsoft Teams is unavailable:
 ### Escalation Format
 
 ```bash
-python messaging/teams/interface.py say "👤 **Stakeholder Input Needed**
+python messaging/slack/interface.py say "👤 **Stakeholder Input Needed**
 
 We need your input on:
 - **Topic**: [Description]
@@ -497,7 +497,7 @@ journalctl -u ninja.service -f    # follow logs
 This starts:
 
 - **Work process**: Executes the current task using browser toolkit
-- **Monitor process**: Watches for new Microsoft Teams mentions
+- **Monitor process**: Watches for new Slack mentions
 
 For one-off operator tasks from a terminal:
 

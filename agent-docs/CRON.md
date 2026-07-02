@@ -1,13 +1,13 @@
 # Cron — Scheduled Agent Prompts
 
 Ninja can run recurring agent prompts on a schedule. Cron jobs flow
-through the **same monitor batch path** as Microsoft Teams mentions, so the agent
+through the **same monitor batch path** as Slack mentions, so the agent
 responds to scheduled jobs the same way it responds to user messages —
 just with `type: cron` instead of `type: mention`.
 
 > **Companion docs:** [`MONITOR.md`](MONITOR.md) (the loop that ticks
-> cron), [`TEAMS_INTERFACE.md`](TEAMS_INTERFACE.md) (how to post the
-> result back to Microsoft Teams).
+> cron), [`SLACK_INTERFACE.md`](SLACK_INTERFACE.md) (how to post the
+> result back to Slack).
 
 ## When to use cron
 
@@ -16,7 +16,7 @@ just with `type: cron` instead of `type: mention`.
 - "Post a weekly report on Mondays."
 
 Schedules evaluate in **system local time**, which Ninja sets from the
-customer's Teams tenant timezone. So `0 9 * * *` means 9am for the
+customer's Slack workspace timezone. So `0 9 * * *` means 9am for the
 customer, not 9am UTC.
 
 ## CLI — `tools/cron.py`
@@ -48,7 +48,7 @@ python tools/cron.py remove daily-summary
 
 `--json` is supported on `list` and `add` for machine-readable output.
 
-The agent always posts to its single configured Microsoft Teams channel — there
+The agent always posts to its single configured Slack channel — there
 is no per-job channel. If a job needs to reply in a thread, pass
 `--thread-ts <ts>` at creation.
 
@@ -101,12 +101,12 @@ Jobs live in `.ninja_crons.json` next to `processes/monitor.py`. The file is
    jitter) and calls `cron_scheduler.get_due_cron_messages()`.
 2. For each due job, the monitor calls `claim_cron(id)` which advances
    `next_run_at` **before** the agent runs (restart-safe).
-3. The job is appended to the same `pending_messages` batch as Microsoft Teams
+3. The job is appended to the same `pending_messages` batch as Slack
    mentions, with `type: "cron"`.
 4. The agent answers it like any other message and posts the result
-   using `messaging/teams/interface.py say "..."`. The agent has a single
-   configured Microsoft Teams channel, so no `-c` flag is needed. If the job has
-   `thread_ts` set, the agent replies in-thread with `-t <reply_to_id>`.
+   using `messaging/slack/interface.py say "..."`. The agent has a single
+   configured Slack channel, so no `-c` flag is needed. If the job has
+   `thread_ts` set, the agent replies in-thread with `-t <thread_ts>`.
 
 ## Responding to a cron item (agent instructions)
 
@@ -114,9 +114,9 @@ When you receive a batch entry with `type: cron`, treat it as a
 self-directed task, not a user question:
 
 - Execute the `prompt` exactly.
-- Post the result with `python messaging/teams/interface.py say "..."`. If the
-  job has `thread_ts` set, reply in-thread with `-t <reply_to_id>`.
-  Ninja has only one configured Microsoft Teams channel, so no `-c` flag is
+- Post the result with `python messaging/slack/interface.py say "..."`. If the
+  job has `thread_ts` set, reply in-thread with `-t <thread_ts>`.
+  Ninja has only one configured Slack channel, so no `-c` flag is
   needed.
 - Keep output concise — same tone rules as `MONITOR.md`.
 - Do **not** ask for confirmation. The schedule is the consent.

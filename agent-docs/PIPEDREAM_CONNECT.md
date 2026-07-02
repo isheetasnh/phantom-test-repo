@@ -12,7 +12,7 @@ trigger their actions from Claude's tool-use loop.
 S3 bucket (pipedream_credentials.json)
         │
         ▼
-messaging/teams/interface.py (startup)
+messaging/slack/interface.py (startup)
   └─ installs creds into ~/.agent_settings.json["pipedream"]
         │
         ├─ utils/pipedream.py      — server-side SDK wrapper
@@ -95,7 +95,7 @@ external_user_id = default_team_id + "." + default_channel_id
                  = "T0A9Q27KD1T.C0B1K38ETGV"
 ```
 
-This scopes every connected account to the specific Microsoft Teams channel (workspace +
+This scopes every connected account to the specific Slack channel (workspace +
 channel), making it safe to run multiple Ninja instances in different channels
 of the same workspace.
 
@@ -178,7 +178,7 @@ dashboard on port 9000.
 
 ### Features
 
-- **Status page** — project ID, environment, external_user_id, Microsoft Teams identity
+- **Status page** — project ID, environment, external_user_id, Slack identity
 - **Browse Apps** — searchable catalog of 3,000+ Pipedream apps with live search
 - **Connected Accounts** — view and disconnect authorised app accounts
 
