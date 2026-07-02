@@ -108,7 +108,7 @@ _RUN_ACTION_PATH = "/ninja/integrations-gateway/actions/run"
 def _load_agent_settings() -> dict:
     """Return ~/.agent_settings.json as a dict, or {} on any error. Cached."""
     try:
-        with open(_AGENT_SETTINGS_PATH) as f:
+        with open(_SANDBOX_METADATA_PATH) as f:
             return json.load(f)
     except Exception:
         return {}
@@ -147,9 +147,7 @@ def _get_ninja_user_id() -> str:
 
     Raises ValueError if neither is set.
     """
-    value = os.environ.get("NINJA_USER_ID") or _load_agent_settings().get(
-        "ninja_user_id"
-    )
+    value = os.environ.get("NINJA_USER_ID") or _load_agent_settings().get("user_id")
     if not value:
         raise ValueError(
             "NINJA_USER_ID is not set. "
