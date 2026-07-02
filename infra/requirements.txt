@@ -6,9 +6,6 @@
 # file with plain pip from public PyPI on the agent host.
 
 
-# S3 channel cache (also installs botocore)
-boto3>=1.28.0
-
 # Cron scheduler (cron_scheduler.py, tools/cron.py — see agent-docs/CRON.md)
 croniter>=2.0.0
 
@@ -20,8 +17,8 @@ httpx>=0.24.0
 # MCP client (utils/mcp.py)
 mcp>=1.0.0
 
-# Pipedream Connect SDK (utils/pipedream.py, dashboard/integrations_app.py)
-pipedream>=2.0.0
+# OpenAI SDK — client for the LiteLLM gateway (audio transcription, etc.)
+openai>=1.0.0
 
 # Browser automation (browser_interface.py)
 playwright>=1.40.0

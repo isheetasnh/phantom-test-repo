@@ -28,6 +28,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
+from utils.pipedream import PipedreamClient, PipedreamError
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = Path.home() / ".agent_settings.json"
 SETTINGS_FILE = REPO_ROOT / "settings.json"
@@ -206,6 +208,27 @@ def check_files() -> dict:
     return {"status": "ok", "message": f"All {len(required)} required files present"}
 
 
+def check_pipedream_health() -> dict:
+    """Check Pipedream Connect gateway health endpoint."""
+    try:
+        result = PipedreamClient().check_health()
+        return {
+            "status": "ok",
+            "message": "Pipedream Connect gateway reachable",
+            **result,
+        }
+    except PipedreamError as exc:
+        return {
+            "status": "error",
+            "message": f"Pipedream Connect gateway returned HTTP {exc.status_code}: {exc.message}",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Pipedream Connect gateway not reachable: {e}",
+        }
+
+
 def check_claude_cli() -> dict:
     """Check if Claude CLI is installed."""
     if shutil.which("claude"):
@@ -239,6 +262,7 @@ def run_health_check(auto_fix: bool = False) -> dict:
         "github": check_github(),
         "settings": check_settings(),
         "files": check_files(),
+        "pipedream": check_pipedream_health(),
         "claude_cli": check_claude_cli(),
     }
 
