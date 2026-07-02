@@ -18,17 +18,27 @@ def _load_sandbox_metadata() -> dict:
         with open(SANDBOX_METADATA_FILE, "r") as f:
             data = json.load(f)
             environment = data.get("environment", "")
-            if environment:
-                return {"environment": environment}
-            else:
-                print(f"⚠️ Sandbox metadata missing environment", file=sys.stderr)
+            thread_id = data.get("thread_id", "")
+
+            if not (environment and thread_id):
+                print(
+                    f"⚠️ Sandbox metadata missing environment or thread_id",
+                    file=sys.stderr,
+                )
                 return {}
+
+            return {"environment": environment, "thread_id": thread_id}
     except FileNotFoundError:
         print(f"⚠️ {SANDBOX_METADATA_FILE} is missing", file=sys.stderr)
         return {}
     except (json.JSONDecodeError, IOError) as e:
         print(f"⚠️ Error reading sandbox metadata: {e}", file=sys.stderr)
         return {}
+
+
+def get_thread_id() -> str | None:
+    """Return the sandbox thread ID, or None if unavailable."""
+    return _load_sandbox_metadata().get("thread_id")
 
 
 def get_super_ninja_url() -> str:
