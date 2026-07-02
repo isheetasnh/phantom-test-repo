@@ -31,6 +31,7 @@ def _find_ninja_src() -> Path | None:
     ]:
         if (p / "tools" / "pdx.py").exists():
             return p
+
     return None
 
 

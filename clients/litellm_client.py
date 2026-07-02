@@ -26,8 +26,6 @@ SETTINGS_PATHS = [
     Path(__file__).resolve().parent.parent / "settings.json",
 ]
 
-_config_cache = None
-
 
 @cache
 def _load_settings() -> dict:

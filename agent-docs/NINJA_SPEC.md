@@ -586,7 +586,7 @@ Update this after each task with what you learned about the sites you visited.
 | **ninja/vnc.py**             | VNC sharing                | Live browser link for humans                                              |
 | **messaging/teams/interface.py**         | Communication              | Post updates, upload screenshots                                          |
 | **Tavily**                     | Web research               | Search, extract, crawl (text-based, no browser needed)                    |
-| **tools/pdx.py** (`pdx`)       | Connected app integrations | Discover and run Pipedream actions; see `agent-docs/PIPEDREAM_CONNECT.md` |
+| **tools/pdx.py** (`pdx`)       | Connected app integrations | Third-party app tools via Pipedream Connect gateway; see `agent-docs/PIPEDREAM_CONNECT.md` |
 | **tools/cron.py**              | Scheduled agent prompts    | Add/list/trigger recurring agent jobs; see `agent-docs/CRON.md`           |
 | **tools/health_check.py**      | System diagnostics         | Check browser, Microsoft Teams, GitHub, settings status                             |
 | **tools/log_analyzer.py**      | Log analysis               | Parse JSONL logs for cost, errors, token usage                            |
