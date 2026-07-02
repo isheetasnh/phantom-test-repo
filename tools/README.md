@@ -6,6 +6,7 @@ Reusable utility tools for the Ninja browser automation agent. Each tool works b
 
 | Tool | Purpose | CLI Usage |
 |------|---------|-----------|
+| `pdx.py` | Discover and run connected Pipedream app actions | `pdx list`, `pdx tools`, `pdx run ...` |
 | `cron.py` | Schedule recurring agent prompts (see `agent-docs/CRON.md`) | `python tools/cron.py add ...`, `list`, `trigger` |
 | `issues.py` | GitHub-issue work queue for the agent loop (see `agent-docs/LOOP.md`) | `python tools/issues.py list`, `count --json`, `create --title ... --body ...`, `comment <n> --body ...`, `close <n> --comment ...` |
 | `health_check.py` | System diagnostics | `python tools/health_check.py` |

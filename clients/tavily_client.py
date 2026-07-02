@@ -45,7 +45,7 @@ _this_dir = Path(__file__).resolve().parent
 if str(_this_dir) not in sys.path:
     sys.path.insert(0, str(_this_dir))
 
-from clients.litellm_client import get_config
+from clients.litellm_client import api_url, get_config, get_headers
 
 
 @dataclass
