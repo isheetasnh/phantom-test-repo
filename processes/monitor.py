@@ -15,13 +15,11 @@ Usage:
 """
 
 import os
-import signal
 import subprocess
 import sys
 import time
 from functools import cache
 from pathlib import Path
-from typing import Optional
 
 from agents_config import AGENTS
 from clients.posthog_client import capture

@@ -286,9 +286,12 @@
             .stats-grid { grid-template-columns: repeat(3, 1fr); }
             .grid2 { grid-template-columns: 1fr; }
         }
-        @media (max-width: 600px) {
+        @media (max-width: 640px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             .hdr-kpis { flex-wrap:wrap; }
+            .log-panel-hdr { flex-direction: column; align-items: flex-start; gap: 8px; }
+            .log-hdr-left { flex-wrap: wrap; width: 100%; }
+            .log-controls { flex-wrap: wrap; width: 100%; }
         }
 
         /* ── Scrollbars ── */
@@ -362,8 +365,8 @@
 
         <!-- ═══ LIVE LOGS (full width) ═══ -->
         <div class="panel full-panel">
-            <div class="panel-hdr">
-                <div style="display:flex;align-items:center;gap:12px;">
+            <div class="panel-hdr log-panel-hdr">
+                <div class="log-hdr-left" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                     <span>📋 Live Logs</span>
                     <div class="log-tabs" id="logTabs"></div>
                 </div>

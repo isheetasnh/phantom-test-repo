@@ -20,6 +20,15 @@ class MessagingInterface(ABC):
     """Abstract base class for all messaging channel adapters."""
 
     # ------------------------------------------------------------------
+    # Connection / health
+    # ------------------------------------------------------------------
+
+    @property
+    @abstractmethod
+    def is_connected(self) -> bool:
+        """Return True if the channel is reachable (tokens present, etc.)."""
+
+    # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
 
@@ -52,6 +61,30 @@ class MessagingInterface(ABC):
     # ------------------------------------------------------------------
     # Reading
     # ------------------------------------------------------------------
+
+    @abstractmethod
+    def upload_file(
+        self,
+        file_path: str,
+        channel: Optional[str] = None,
+        title: Optional[str] = None,
+        comment: Optional[str] = None,
+        thread_ts: Optional[str] = None,
+        agent: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Upload a file and share it in the channel.
+
+        Args:
+            file_path: Local path to the file.
+            channel:   Override the default channel/conversation.
+            title:     Optional display title for the file.
+            comment:   Optional text to accompany the file.
+            thread_ts: Thread / reply-to identifier.
+            agent:     Named agent whose identity to post under.
+
+        Returns:
+            Channel API response dict.
+        """
 
     @abstractmethod
     def get_history(
@@ -139,4 +172,34 @@ class MessagingInterface(ABC):
             Optional keys:
                 ``message``  — human-readable error detail
                 ``team``     — workspace / account name on success (if available)
+        """
+
+    # ------------------------------------------------------------------
+    # Configuration helpers (optional — channels may override)
+    # ------------------------------------------------------------------
+
+    @property
+    def default_channel(self) -> Optional[str]:
+        """Return the configured default channel identifier, if any."""
+        return None
+
+    @property
+    def default_channel_name(self) -> Optional[str]:
+        """Return the human-readable default channel name, if any."""
+        return None
+
+    @abstractmethod
+    def get_unique_channel(self) -> str:
+        """Return a stable, workspace-scoped identifier for Pipedream Connect.
+
+        Used as the ``x-ninja-integration-channel-id`` header value sent to the
+        ninja-integrations-gateway. Must be stable for the lifetime of the
+        workspace — changing it creates a new empty gateway identity and
+        loses all connected apps.
+
+        The value should be prefixed with the messaging adapter type, e.g.
+        ``<adapter>-<workspace_id>.<channel_id>``.
+
+        Raises:
+            ValueError: If the required identity fields are not configured.
         """

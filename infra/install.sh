@@ -3,20 +3,17 @@
 #
 # Usage:
 #   ./install.sh --messaging-channel slack --channel "#my-channel" --channel-id "C0AAAAMBR1R"
+#   ./install.sh --messaging-channel teams --teams-id "TEAM_ID" --channel-id "CHANNEL_ID"
 #   ./install.sh --messaging-channel whatsapp
-#   ./install.sh --messaging-channel teams
 #
 # What this does:
 #   1.   Installs Python dependencies (requirements.txt)
-#   1.5. Installs pdx CLI
+#   1.5. Installs pdx CLI (Pipedream Connect wrapper)
 #   2.   Creates the logs directory + writes MESSAGING_CHANNEL to /etc/environment
 #   3.   Runs channel-specific setup (install/<channel>.sh)
 #   4.   Installs and enables systemd services
 #   5.   Configures VNC (removes password)
 #   6.   Waits for browser server to be ready
-#
-# Prerequisites (must be provided manually — not handled by this script):
-#   - s3_config.json at repo root or /root/  (AWS credentials for S3 cache)
 
 set -euo pipefail
 
@@ -36,20 +33,22 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --messaging-channel CHANNEL   Messaging channel (required: slack|whatsapp|teams)"
-    echo "  --channel CHANNEL             Channel name — passed to channel script (e.g. '#my-channel')"
+    echo "  --channel CHANNEL             Slack channel name — passed to channel script (e.g. '#my-channel')"
     echo "  --channel-id CHANNEL_ID       Channel ID — passed to channel script (e.g. 'C0AAAAMBR1R')"
-    echo "  --workspace-id WORKSPACE_ID   Workspace ID — passed to channel script (optional)"
+    echo "  --workspace-id WORKSPACE_ID   Slack workspace ID — passed to channel script (optional)"
+    echo "  --teams-id TEAM_ID            Microsoft Teams team ID — passed to channel script"
     echo "  --help                        Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 --messaging-channel slack --channel '#my-channel' --channel-id 'C0AAAAMBR1R'"
+    echo "  $0 --messaging-channel teams --teams-id 'TEAM_ID' --channel-id 'CHANNEL_ID'"
     echo "  $0 --messaging-channel whatsapp"
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --messaging-channel) MESSAGING_CHANNEL="$2"; shift 2 ;;
-        --channel|--channel-id|--workspace-id)
+        --channel|--channel-id|--workspace-id|--teams-id)
             CHANNEL_ARGS+=("$1" "$2"); shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unknown option: $1"; usage; exit 1 ;;
@@ -86,7 +85,7 @@ export PYTHONPATH="${NINJA_PARENT}:${PYTHONPATH:-}"
 echo "  ✓ PYTHONPATH configured (${NINJA_PARENT})"
 
 # ---------------------------------------------------------------------------
-# Step 1.5: Install pdx CLI (Pipedream LLM wrapper)
+# Step 1.5: Install pdx CLI (Pipedream Connect wrapper)
 # ---------------------------------------------------------------------------
 PDX_SRC="$SCRIPT_DIR/bin/pdx"
 PDX_DST="/usr/local/bin/pdx"
@@ -136,6 +135,15 @@ cp "$SCRIPT_DIR/systemd/ninja-monitor.service"      /etc/systemd/system/ninja-mo
 cp "$SCRIPT_DIR/systemd/ninja-dashboard.service"    /etc/systemd/system/ninja-dashboard.service
 cp "$SCRIPT_DIR/systemd/ninja-integrations.service" /etc/systemd/system/ninja-integrations.service
 cp "$SCRIPT_DIR/systemd/ninja-health.service"       /etc/systemd/system/ninja-health.service
+
+# systemd ignores /etc/environment, so inject MESSAGING_CHANNEL into the units
+# that build a messaging interface (else they fall back to the "slack" default).
+for svc in ninja-monitor ninja-health; do
+    mkdir -p "/etc/systemd/system/${svc}.service.d"
+    printf '[Service]\nEnvironment=MESSAGING_CHANNEL=%s\n' "$MESSAGING_CHANNEL" \
+        > "/etc/systemd/system/${svc}.service.d/channel.conf"
+done
+
 systemctl daemon-reload
 systemctl enable ninja-sync.service ninja.service ninja-monitor.service ninja-dashboard.service ninja-integrations.service ninja-health.service
 systemctl start  ninja-sync.service ninja.service ninja-monitor.service ninja-dashboard.service ninja-integrations.service ninja-health.service

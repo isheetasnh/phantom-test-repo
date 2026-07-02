@@ -453,7 +453,7 @@ All agents have access to AI models through the NinjaTech LiteLLM gateway. A rea
 | -------------------------------------------- | --------------------------------------------------------------------------- |
 | [MODELS.md](MODELS.md)                       | Complete model catalog — aliases, capabilities, parameters, sizes           |
 | [LITELLM_GUIDE.md](LITELLM_GUIDE.md)         | Usage guide — code examples, error handling, building custom utilities      |
-| [PIPEDREAM_CONNECT.md](PIPEDREAM_CONNECT.md) | Connected app integrations — OAuth dashboard, `tools/pdx.py`, and `pdx` CLI |
+| [PIPEDREAM_CONNECT.md](PIPEDREAM_CONNECT.md)                         | Connected app integrations — Pipedream Connect gateway, `tools/pdx.py`, and `pdx` CLI |
 
 ### Quick Import Reference
 

@@ -16,22 +16,26 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import httpx
 from clients.litellm_client import api_url, get_config, get_headers
 from clients.posthog_client import capture
-from clients.super_ninja_client import get_super_ninja_url
+from clients.super_ninja_client import get_super_ninja_url, get_thread_id
+from constants import HEADER_NINJA_CONVERSATION_ID, HEADER_NINJA_TASK_ID
 
 # REPO_ROOT is the src/ninja/ package root — used to locate claude-wrapper.sh
 _REPO_ROOT = Path(__file__).parent.parent
+
 
 _TITLE_SYSTEM_PROMPT = "You are a helpful assistant that generates extremely concise titles (2-4 words maximum) for tasks based on the user's message. Respond with only the title, no other text or punctuation."
 _TITLE_USER_PROMPT = "Generate an extremely brief title (2-4 words only) for a task that starts with this message:\n{prompt}"
 
 LITELLM_SPENDING_UPDATE_INTERVAL_SECONDS = 5
-TASK_LOG_FILE = Path("/workspace/ninja/src/ninja/.task_log.jsonl")
+TASK_LOG_FILE = Path("/workspace/ninja/.task_log.jsonl")
 
 # ---------------------------------------------------------------------------
 # Credit / subprocess error classification
@@ -47,6 +51,24 @@ def is_customer_key_error(output: str) -> bool:
     lower = output.lower()
     return ("400" in lower and "budget has been exceeded" in lower) or (
         "402" in lower and "customer keys are not active" in lower
+    )
+
+
+def _record_cost(
+    texts: list[str],
+    started_at: float,
+    before_spend: float,
+    task_id: str | None,
+    conversation_id: str | None,
+) -> None:
+    task_cost = 0.0
+    while task_cost <= 0:
+        time.sleep(LITELLM_SPENDING_UPDATE_INTERVAL_SECONDS)
+        after_spend = get_current_spend()
+        task_cost = max(0.0, after_spend - before_spend)
+
+    _write_task_log(
+        texts, started_at, task_cost, task_id=task_id, conversation_id=conversation_id
     )
 
 
@@ -66,7 +88,13 @@ def get_current_spend() -> float:
         return 0.0
 
 
-def _write_task_log(texts: list[str], started_at: float, cost: float) -> None:
+def _write_task_log(
+    texts: list[str],
+    started_at: float,
+    cost: float,
+    task_id: str | None = None,
+    conversation_id: str | None = None,
+) -> None:
     """Find the JSONL written by Claude during this invocation, extract last prompt UUID, write task log."""
     try:
         claude_projects = Path.home() / ".claude" / "projects"
@@ -93,7 +121,13 @@ def _write_task_log(texts: list[str], started_at: float, cost: float) -> None:
 
         if prompt_uuid:
             combined = " | ".join(texts) if texts else ""
-            title = generate_task_title(combined) if combined else None
+            title = (
+                generate_task_title(
+                    combined, task_id=task_id, conversation_id=conversation_id
+                )
+                if combined
+                else None
+            )
             if not title:
                 title = (
                     (combined[:50] + "…")
@@ -105,8 +139,9 @@ def _write_task_log(texts: list[str], started_at: float, cost: float) -> None:
                 "texts": texts,
                 "cost": cost,
                 "title": title,
+                "ninja_task_id": task_id,
             }
-            with open(_REPO_ROOT / ".task_log.jsonl", "a", encoding="utf-8") as f:
+            with open(TASK_LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
             print(
                 f"📝 Task log written: uuid={prompt_uuid} title={title!r} cost=${cost:.6f}",
@@ -116,12 +151,20 @@ def _write_task_log(texts: list[str], started_at: float, cost: float) -> None:
         print(f"⚠️ Could not write task log: {e}", file=sys.stderr)
 
 
-def generate_task_title(prompt: str) -> str | None:
+def generate_task_title(
+    prompt: str, task_id: str | None = None, conversation_id: str | None = None
+) -> str | None:
     """Call LiteLLM to generate a 2-4 word title for the given prompt."""
     try:
+        extra_headers = {}
+        if task_id:
+            extra_headers[HEADER_NINJA_TASK_ID] = task_id
+        if conversation_id:
+            extra_headers[HEADER_NINJA_CONVERSATION_ID] = conversation_id
+
         resp = httpx.post(
             api_url("/v1/chat/completions"),
-            headers=get_headers(),
+            headers={**get_headers(), **extra_headers},
             json={
                 "model": "claude-haiku-4-5-20251001",
                 "messages": [
@@ -360,7 +403,13 @@ def run_batched_response(
 
     texts = [msg.get("text", "") for msg in pending_messages if msg.get("text")]
     before_spend = get_current_spend()
-    started_at = time.time()
+    started_at = datetime.now(timezone.utc).timestamp()
+    task_id = str(uuid.uuid4())
+    conversation_id = get_thread_id()
+
+    custom_headers = f"{HEADER_NINJA_TASK_ID}: {task_id}"
+    if conversation_id:
+        custom_headers += f"\n{HEADER_NINJA_CONVERSATION_ID}: {conversation_id}"
 
     try:
         result = subprocess.run(
@@ -369,6 +418,7 @@ def run_batched_response(
             capture_output=True,
             text=True,
             timeout=180,
+            env={**os.environ, "ANTHROPIC_CUSTOM_HEADERS": custom_headers},
         )
         output = result.stdout + result.stderr
         success_count = (
@@ -377,17 +427,11 @@ def run_batched_response(
             + output.count("Timestamp:")
         )
 
-        def _record_cost():
-            task_cost = 0.0
-            while task_cost <= 0:
-                # get_current_spend calls an API that guarantees eventual-consistency
-                # it needs to time.sleep() to get updated spending (it's temporary till we find a better approach)
-                time.sleep(LITELLM_SPENDING_UPDATE_INTERVAL_SECONDS)
-                after_spend = get_current_spend()
-                task_cost = max(0.0, after_spend - before_spend)
-            _write_task_log(texts, started_at, task_cost)
-
-        threading.Thread(target=_record_cost, daemon=True).start()
+        threading.Thread(
+            target=_record_cost,
+            args=(texts, started_at, before_spend, task_id, conversation_id),
+            daemon=True,
+        ).start()
 
         if is_customer_key_error(output):
             raise RunOutOfCreditsException
