@@ -540,7 +540,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   transition:background .12s;
 }
 .acct-card:hover{background:var(--s2)}
-.acct-icon{width:36px;height:36px;border-radius:8px;object-fit:contain;background:var(--s3);padding:4px;border:1px solid var(--border);flex-shrink:0}
+.acct-icon{width:36px;height:36px;border-radius:8px;object-fit:contain;background:var(--icon-bg);padding:4px;border:1px solid var(--border);flex-shrink:0}
 .acct-icon-ph{width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,var(--purple),#4f46e5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700;flex-shrink:0}
 .acct-info{flex:1;min-width:0}
 .acct-name{font-size:13.5px;font-weight:600}
@@ -679,10 +679,34 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 /* panel overlay */
 .panel-bg{position:fixed;inset:0;z-index:199;display:none}
 .panel-bg.open{display:block}
+/* hamburger – hidden on desktop */
+.menu-btn{display:none}
+/* ── Mobile ── */
+@media(max-width:640px){
+  .sidebar{
+    position:fixed;top:0;left:0;height:100vh;z-index:300;
+    transform:translateX(-100%);transition:transform .25s cubic-bezier(.4,0,.2,1);
+  }
+  .sidebar.open{transform:translateX(0)}
+  #sidebar-bg{position:fixed;inset:0;z-index:299;background:rgba(0,0,0,.6);display:none}
+  #sidebar-bg.open{display:block}
+  .menu-btn{
+    display:flex;align-items:center;justify-content:center;
+    width:32px;height:32px;flex-shrink:0;
+    border:1px solid var(--border);border-radius:7px;
+    background:var(--s2);cursor:pointer;color:var(--text);font-size:18px;line-height:1;
+  }
+  .topbar-chips{flex-wrap:wrap}
+  #chip-uid{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .info-tbl td:first-child{width:110px;font-size:12px}
+  .acct-card{flex-wrap:wrap}
+  .acct-actions{width:100%;justify-content:flex-end}
+}
 </style>
 </head>
 <body>
 <div class="layout">
+<div id="sidebar-bg" onclick="closeSidebar()"></div>
 <!-- ─── Sidebar ─────────────────────────────────── -->
 <nav class="sidebar">
   <div class="sb-logo">
@@ -720,6 +744,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 <!-- ─── Main ───────────────────────────────────── -->
 <div class="main">
   <div class="topbar">
+    <button class="menu-btn" onclick="toggleSidebar()">☰</button>
     <div class="topbar-title" id="topbar-title">Status</div>
     <div class="topbar-chips">
       <span class="chip green" id="chip-env">–</span>
@@ -834,6 +859,7 @@ let _connectCheckInterval = null;
 const PAGE_TITLES = {status:'Status', apps:'Browse Apps', accounts:'Connected Accounts'};
 
 function nav(pageId, el) {
+  closeSidebar();
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + pageId).classList.add('active');
@@ -1283,6 +1309,18 @@ function err(e) {
 }
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Sidebar (mobile)
+══════════════════════════════════════════════════════════════════ */
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.getElementById('sidebar-bg').classList.toggle('open');
+}
+function closeSidebar() {
+  document.querySelector('.sidebar').classList.remove('open');
+  document.getElementById('sidebar-bg').classList.remove('open');
 }
 
 /* ══════════════════════════════════════════════════════════════════

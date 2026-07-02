@@ -73,7 +73,7 @@
         .tab-panel.active { display: block; }
 
         .table-wrap {
-            background: var(--card); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden;
+            background: var(--card); border: 1px solid var(--border); border-radius: var(--r); overflow-x: auto;
         }
         table { width: 100%; border-collapse: collapse; }
         thead tr { background: var(--bg2); }
@@ -111,6 +111,17 @@
         .pg-btn:hover:not(:disabled) { border-color: var(--blue); color: var(--text); }
         .pg-btn:disabled { opacity: 0.3; cursor: default; }
         .pg-info { font-size: 12px; color: var(--text2); }
+
+        @media (max-width: 640px) {
+            .container { padding: 16px 12px; }
+            .hdr { flex-wrap: wrap; gap: 10px; }
+            .hdr-sub { margin-left: 0; width: 100%; }
+            .summary { flex-wrap: wrap; }
+            .kpi { min-width: calc(50% - 6px); }
+            .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .td-task { max-width: 160px; }
+            .td-task-text { max-width: 160px; }
+        }
     </style>
 </head>
 <body>
