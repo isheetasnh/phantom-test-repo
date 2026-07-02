@@ -17,6 +17,12 @@ httpx>=0.24.0
 # MCP client (utils/mcp.py)
 mcp>=1.0.0
 
+# OpenAI SDK — client for the LiteLLM gateway (audio transcription, etc.)
+openai>=1.0.0
+
+# Pipedream Connect SDK (utils/pipedream.py, dashboard/integrations_app.py)
+pipedream>=2.0.0
+
 # Browser automation (browser_interface.py)
 playwright>=1.40.0
 
