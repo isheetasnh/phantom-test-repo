@@ -575,6 +575,9 @@ class TeamsInterface(MessagingInterface):
         except Exception as e:
             return {"service": "teams", "status": "error", "message": str(e)}
 
+    def get_unique_channel(self) -> str:
+        raise NotImplementedError("Teams adapter is not yet implemented.")
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Teams messaging CLI")

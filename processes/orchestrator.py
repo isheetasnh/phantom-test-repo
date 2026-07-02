@@ -693,7 +693,7 @@ You are currently running as the orchestrator agent. Before starting work, read 
 2. **Agent Protocol:** `cat agent-docs/AGENT_PROTOCOL.md`
 3. **Slack Interface Docs:** `cat agent-docs/SLACK_INTERFACE.md`
 4. **Workflow Docs:** `cat agent-docs/ORCHESTRATOR.md`
-5. **Pipedream Integrations:** `cat agent-docs/PIPEDREAM_CONNECT.md` — connected app discovery, OAuth dashboard, and `tools/pdx.py` (`pdx`) CLI tools
+5. **Integrations:** `cat agent-docs/PIPEDREAM_CONNECT.md` — third-party app integrations via Pipedream Connect gateway and the `pdx` CLI
 
 ---
 

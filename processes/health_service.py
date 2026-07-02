@@ -179,39 +179,22 @@ def check_litellm_health() -> int:
 
 
 def check_pipedream_health() -> int:
-    """Emit ``ninja pipedream health`` (error=1) only if the OAuth probe fails.
+    """Emit ``ninja pipedream health`` (error=1) only if the Pipedream probe fails.
 
-    Instantiates PipedreamClient and makes a minimal catalog call to force the
-    OAuth exchange. Returns 1 on error, 0 on success.
+    GETs /ninja/integrations-gateway/health — a lightweight endpoint that
+    requires no auth and has no side effects.
+    Returns 1 on error, 0 on success.
     """
     try:
-        client = PipedreamClient()
-    except RuntimeError:
-        print("🔌 Pipedream credentials not found", flush=True)
-        _emit_error(
-            "ninja pipedream health",
-            "Pipedream credentials not found",
-            message=str(e)[:120],
-        )
-        return 1
+        pdx = PipedreamClient()
+        pdx.check_health()
+        print("🔌 Pipedream OK", flush=True)
+        return 0
     except Exception as e:
-        print(f"🔌 Error accessing Pipedream: {e}", flush=True)
-        _emit_error(
-            "ninja pipedream health", "Error accessing Pipedream", message=str(e)[:120]
-        )
+        err = str(e)[:120]
+        _emit_error("ninja pipedream health", "error", message=err)
+        print(f"🔌 Pipedream ERROR ({err})", flush=True)
         return 1
-
-    try:
-        client.list_apps(limit=1)
-    except Exception as e:
-        _emit_error(
-            "ninja pipedream health", "Error calling Pipedream", message=str(e)[:120]
-        )
-        print(f"🔌 Pipedream ERROR ({str(e)[:120]})", flush=True)
-        return 1
-
-    print("🔌 Pipedream OK", flush=True)
-    return 0
 
 
 def _fetch_egress_ip(proxy: str | None) -> str | None:

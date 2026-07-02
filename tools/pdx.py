@@ -1,594 +1,164 @@
 #!/usr/bin/env python3
 """
-tools/pdx.py — Ninja × Pipedream LLM CLI wrapper
-==================================================
+tools/pdx.py — Pipedream Connect CLI
+======================================
 
-A lightweight, JSON-first CLI that exposes a user's connected Pipedream
-integrations to an LLM agent. Designed for tool-calling workflows.
+JSON-first CLI for the Pipedream Connect integrations gateway. Routes through LiteLLM
+so Phantom never talks to the gateway directly.
 
-Every command prints a single JSON object on stdout and exits 0 on
-success or non-zero on error (with `{"ok": false, "error": "..."}`).
-The schema is stable so the LLM can parse reliably.
+Every command prints a single JSON object on stdout and exits 0 on success
+or non-zero on error (with {"ok": false, "error": "..."}).
 
 Subcommands
 -----------
     pdx status
-        Show environment, project, and the current external_user_id.
+        Show the resolved user_id, unique_channel, and gateway URL.
+        Use this to verify configuration before running other commands.
 
-    pdx list
-        List *connected* apps (integrations the user has onboarded).
-        This is what the LLM should call first to know what's available.
+    pdx chat "<message>" [--model MODEL] [--event-id ID]
+        Send a natural-language message. LiteLLM fetches the user's available
+        tools from ninja_integrations_gateway_user, passes them to the LLM, executes any
+        tool calls, and returns the final response — all in one request.
+
+        Options:
+            --model MODEL      LiteLLM model alias (default: ANTHROPIC_MODEL from settings)
+            --event-id ID      Agent run / event ID (x-ninja-event-id, for traceability)
+
+    pdx health
+        GET /ninja/integrations-gateway/health — no auth required.
+        Returns the gateway health response as JSON.
+
+    pdx connect-link [--event-id ID]
+        Get a short-lived OAuth connection link for the user (expires 30 min).
+        Calls get_connection_link on ninja_integrations_gateway_system via direct MCP REST —
+        no LLM involved. Post the returned link to the user in chat.
 
     pdx apps [--q QUERY] [--limit N]
-        Browse the Pipedream catalog (all apps, connected or not).
+        Browse the Pipedream app catalog (all apps, connected or not).
+        Calls GET /ninja/integrations-gateway/apps on the gateway.
 
     pdx actions <app_slug>
         Enumerate the actions available for an app (from GitHub registry).
+        No gateway call — reads directly from the PipedreamHQ/pipedream GitHub repo.
 
     pdx describe <action_key>
         Show the JSON-schema-ish props for a specific action — what the
         LLM needs to supply when running it.
+        No gateway call — reads directly from the PipedreamHQ/pipedream GitHub repo.
 
-    pdx run <action_key> [--args JSON] [--arg k=v ...] [--via proxy|actions-api]
-        Invoke an action on behalf of the onboarded user. By default
-        runs through the Connect Proxy (free plan). Pass
-        ``--via actions-api`` to use the paid Connect Components API.
+    pdx run <action_key> [--args JSON] [--arg k=v ...] [--event-id ID]
+        Invoke an action on behalf of the onboarded user.
+        Calls POST /ninja/integrations-gateway/actions/run on the gateway.
 
-    pdx http <app_slug> <METHOD> <url> [--json JSON] [--header K:V] [--query k=v]
-        Send an authenticated upstream HTTP request via the Pipedream
-        Connect Proxy. Works for any proxy-enabled app (oauth or keys)
-        without needing a registered component.
+    pdx http <app_slug> <METHOD> <url>
+             [--json JSON] [--data STR]
+             [--header K:V ...] [--query k=v ...]
+             [--event-id ID]
+        Make a raw authenticated HTTP request through the Pipedream proxy — no LLM
+         involved. The gateway resolves credentials from x-ninja-user-id and
+        x-ninja-integration-channel-id and proxies the call upstream.
 
-    pdx connect <app_slug>
-        Mint a Connect token and return the OAuth link.
+        Positional:
+            app_slug           App slug (e.g. 'github', 'gmail').
+            METHOD             HTTP method (GET, POST, PUT, PATCH, DELETE).
+            url                Upstream URL (e.g. 'https://api.github.com/user').
+
+        Options:
+            --json JSON        JSON body as a string (mutually exclusive with --data).
+            --data STR         Raw body string (mutually exclusive with --json).
+            --header K:V       Extra header to forward upstream (repeatable).
+            --query k=v        Query string parameter (repeatable).
+            --event-id ID      x-ninja-event-id traceability header.
 
     pdx tools [--apps SLUG,SLUG] [--limit N]
         Emit OpenAI-style function-calling schema for every action of
         every connected app (or a filtered subset). Feed this directly
-        to `tools=[...]` in an LLM request.
+        to tools=[...] in an LLM request.
 
 Exit codes
 ----------
     0   success
-    1   usage / bad args
-    2   not configured (no pipedream block in agent_settings.json)
-    3   runtime error (API failure, etc.)
+    1   usage / bad arguments
+    2   configuration error (NINJA_USER_ID not set, agent_settings.json missing fields)
+    3   runtime error (HTTP 4xx/5xx, tool returned isError: true, unexpected response)
+
+Examples
+--------
+    pdx status
+    pdx health
+    pdx apps --q "google"
+    pdx actions github
+    pdx describe github-create-issue
+    pdx run github-create-issue --arg repoFullname=acme/repo --arg title="Bug fix"
+    pdx chat "What's on my Google Calendar today?"
+    pdx chat "List my open GitHub pull requests"
+    pdx connect-link
+    pdx http github GET https://api.github.com/user
+    pdx http github POST https://api.github.com/repos/acme/repo/issues \\
+        --json '{"title": "Bug fix", "body": "Details here"}'
+    pdx http gmail GET https://www.googleapis.com/gmail/v1/users/me/profile
+    pdx http hubspot POST https://api.hubapi.com/crm/v3/objects/contacts \\
+        --json '{"properties": {"email": "user@example.com"}}'
+    pdx tools
+    pdx tools --apps github,gmail --limit 10
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import sys
-import time
-import urllib.request
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-# We import lazily inside _client() so `pdx --help` works even when
-# the SDK or credentials aren't installed yet.
+from clients.litellm_client import get_config
+from utils.pdx_github import (
+    APP_SLUG_TO_GH,
+    action_to_openai_tool,
+    describe_action,
+    list_actions_for_app,
+)
+from utils.pipedream import (
+    PipedreamClient,
+    PipedreamError,
+    _get_ninja_user_id,
+    _get_unique_channel,
+)
 
-# ───────────────────────────── constants ──────────────────────────────
-
-_GH_API = "https://api.github.com/repos/PipedreamHQ/pipedream/contents/components"
-_GH_RAW = "https://raw.githubusercontent.com/PipedreamHQ/pipedream/master/components"
-
-# Pipedream slug → GitHub component folder (most are identity)
-_APP_SLUG_TO_GH: Dict[str, str] = {
-    "slack_v2": "slack_v2",
-    "slack_bot": "slack_bot",
-    "github": "github",
-    "gitlab": "gitlab",
-    "google_sheets": "google_sheets",
-    "google_drive": "google_drive",
-    "google_calendar": "google_calendar",
-    "gmail": "gmail",
-    "notion": "notion",
-    "hubspot": "hubspot",
-    "salesforce_rest_api": "salesforce_rest_api",
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "telegram_bot_api": "telegram_bot_api",
-    "linear_app": "linear_app",
-    "jira": "jira",
-    "zendesk": "zendesk",
-    "discord_bot": "discord_bot",
-    "discord": "discord",
-    "stripe": "stripe",
-    "twilio": "twilio",
-    "airtable_oauth": "airtable_oauth",
-    "dropbox": "dropbox",
-    "asana": "asana",
-    "trello": "trello",
-    "monday": "monday",
-    "mysql": "mysql",
-    "postgresql": "postgresql",
-    "mongodb": "mongodb",
-    "aws": "aws",
-    "sendgrid": "sendgrid",
-    "zoom": "zoom",
-    "microsoft_teams": "microsoft_teams",
-    "outlook": "outlook",
-    "calendly": "calendly",
-    "typeform": "typeform",
-    "google_forms": "google_forms",
-    "supabase": "supabase",
-    "pinecone": "pinecone",
-    "shopify_developer_app": "shopify_developer_app",
-}
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
 
 
-# ───────────────────────────── helpers ────────────────────────────────
+def _ok(data: dict[str, Any]) -> None:
+    print(json.dumps({"ok": True, **data}))
 
 
-def _emit(data: Dict[str, Any], *, exit_code: int = 0) -> None:
-    """Print one JSON object on stdout and exit."""
-    json.dump(data, sys.stdout, ensure_ascii=False, default=str, indent=None)
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+def _fail(message: str, exit_code: int = 3) -> None:
+    print(json.dumps({"ok": False, "error": message}))
     sys.exit(exit_code)
 
 
-def _fail(error: str, *, exit_code: int = 3, **extra: Any) -> None:
-    """Print a standard error envelope and exit non-zero."""
-    payload = {"ok": False, "error": error, **extra}
-    _emit(payload, exit_code=exit_code)
+def _client() -> PipedreamClient:
+    return PipedreamClient()
 
 
-def _client():
-    """Lazily build a PipedreamClient; fail-fast with a useful error."""
-    try:
-        from utils.pipedream import PipedreamClient  # type: ignore
-    except Exception as e:
-        _fail(f"utils.pipedream not importable: {e}", exit_code=2)
-    try:
-        return PipedreamClient()
-    except Exception as e:
-        _fail(
-            f"Pipedream not configured: {e}",
-            exit_code=2,
-            hint="Run Ninja's Slack onboarding to install credentials, "
-            'or check ~/.agent_settings.json["pipedream"].',
-        )
-
-
-def _gh_get(url: str, timeout: int = 8) -> Any:
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "pdx/1.0", "Accept": "application/vnd.github+json"}
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
-
-
-def _gh_raw(url: str, timeout: int = 5) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "pdx/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="ignore")
-
-
-def _slug_to_title(slug: str) -> str:
-    return " ".join(w.capitalize() for w in slug.replace("-", " ").split())
-
-
-# ─────────────────── .mjs parser for action metadata ──────────────────
-
-_RE_NAME = re.compile(r'\bname:\s*["`\'](.*?)["`\']', re.DOTALL)
-_RE_DESC = re.compile(r'\bdescription:\s*["`\'](.*?)["`\']', re.DOTALL)
-_RE_VER = re.compile(r'\bversion:\s*["`\']([\d.]+)["`\']')
-_RE_KEY = re.compile(r'\bkey:\s*["`\'](.*?)["`\']')
-
-
-def _parse_action_meta(mjs: str) -> Dict[str, str]:
-    n = _RE_NAME.search(mjs)
-    d = _RE_DESC.search(mjs)
-    v = _RE_VER.search(mjs)
-    k = _RE_KEY.search(mjs)
-    return {
-        "key": k.group(1) if k else "",
-        "name": n.group(1) if n else "",
-        "description": (d.group(1) if d else "").replace("\\n", " ").strip(),
-        "version": v.group(1) if v else "",
+def _handle_pdx_error(exc: PipedreamError) -> None:
+    """Translate a PipedreamError into a _fail() call and exit."""
+    messages = {
+        400: f"Bad request (HTTP 400) — check user_id and unique_channel: {exc.message}",
+        403: f"Forbidden (HTTP 403) — API key has no associated Ninja user: {exc.message}",
+        502: f"Gateway error (HTTP 502) — Pipedream Connect gateway may be down: {exc.message}",
     }
+    _fail(messages.get(exc.status_code, str(exc)), exit_code=3)
 
 
-def _extract_props_block(mjs: str) -> Optional[str]:
-    """Return the raw text inside the top-level `props: { ... }` block."""
-    i = mjs.find("props:")
-    if i < 0:
-        return None
-    # Find the first '{' after 'props:'
-    start = mjs.find("{", i)
-    if start < 0:
-        return None
-    depth = 0
-    for j in range(start, len(mjs)):
-        c = mjs[j]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return mjs[start + 1 : j]
-    return None
-
-
-_PROP_TYPE_MAP = {
-    "string": "string",
-    "string[]": "array",
-    "integer": "integer",
-    "integer[]": "array",
-    "boolean": "boolean",
-    "object": "object",
-    "any": "string",
-    "app": "string",  # app references — opaque to LLM
-    "$.interface.http": "string",
-    "$.service.db": "object",
-}
-
-
-def _parse_props(props_block: str) -> Dict[str, Dict[str, Any]]:
-    """
-    Parse a top-level `props: { ... }` block into a flat schema.
-    Only top-level props are returned; app references and propDefinitions
-    are surfaced as "string" with a note.
-    """
-    props: Dict[str, Dict[str, Any]] = {}
-    # Walk top-level entries only
-    depth = 0
-    i = 0
-    n = len(props_block)
-    entries: List[str] = []
-    entry_start = 0
-    while i < n:
-        c = props_block[i]
-        if c == "{" or c == "[" or c == "(":
-            depth += 1
-        elif c == "}" or c == "]" or c == ")":
-            depth -= 1
-        elif c == "," and depth == 0:
-            entries.append(props_block[entry_start:i])
-            entry_start = i + 1
-        i += 1
-    tail = props_block[entry_start:].strip()
-    if tail:
-        entries.append(tail)
-
-    for raw in entries:
-        raw = raw.strip().rstrip(",").strip()
-        if not raw:
-            continue
-
-        # Form A:  name: { ... }
-        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*\{(.*)\}\s*$", raw, re.DOTALL)
-        if m:
-            pname = m.group(1)
-            body = m.group(2)
-
-            t_match = re.search(r'\btype:\s*["`\'](.*?)["`\']', body)
-            label_m = re.search(r'\blabel:\s*["`\'](.*?)["`\']', body, re.DOTALL)
-            desc_m = re.search(r'\bdescription:\s*["`\'](.*?)["`\']', body, re.DOTALL)
-            opt_m = re.search(r"\boptional:\s*(true|false)", body)
-            default_m = re.search(
-                r'\bdefault:\s*("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|\d+|true|false)',
-                body,
-            )
-            is_ref = "propDefinition" in body
-
-            raw_type = (
-                t_match.group(1) if t_match else ("string" if is_ref else "string")
-            )
-            mapped = _PROP_TYPE_MAP.get(raw_type, "string")
-
-            entry: Dict[str, Any] = {"type": mapped, "raw_type": raw_type}
-            if label_m:
-                entry["label"] = label_m.group(1)
-            if desc_m:
-                entry["description"] = desc_m.group(1).replace("\\n", " ").strip()[:300]
-            if opt_m:
-                entry["required"] = opt_m.group(1) == "false"
-            else:
-                entry[
-                    "required"
-                ] = not is_ref  # propDefinition refs are usually optional-ish
-            if default_m:
-                try:
-                    entry["default"] = json.loads(default_m.group(1).replace("'", '"'))
-                except Exception:
-                    entry["default"] = default_m.group(1).strip("\"'")
-            if is_ref:
-                entry["propDefinition"] = True
-
-            props[pname] = entry
-            continue
-
-        # Form B:  bare identifier (e.g. `github,` at top of props) → app ref
-        m2 = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)$", raw)
-        if m2:
-            props[m2.group(1)] = {
-                "type": "string",
-                "raw_type": "app",
-                "appReference": True,
-                "required": True,
-                "description": f"Connected {m2.group(1)} account (auto-filled by Pipedream).",
-            }
-            continue
-
-    return props
-
-
-def _action_schema_from_mjs(
-    app_slug: str, action_slug: str, mjs: str
-) -> Dict[str, Any]:
-    meta = _parse_action_meta(mjs)
-    props_block = _extract_props_block(mjs) or ""
-    props = _parse_props(props_block)
-    # Drop app references from the user-facing schema — Pipedream fills those.
-    public_props = {k: v for k, v in props.items() if not v.get("appReference")}
-    return {
-        "ok": True,
-        "app_slug": app_slug,
-        "action_slug": action_slug,
-        "key": meta["key"] or f"{app_slug}-{action_slug}",
-        "name": meta["name"] or _slug_to_title(action_slug),
-        "description": meta["description"],
-        "version": meta["version"],
-        "props": public_props,
-        "app_refs": [k for k, v in props.items() if v.get("appReference")],
-    }
-
-
-# ───────────────────────── action enumeration ─────────────────────────
-
-_cache: Dict[str, Any] = {}
-_CACHE_TTL = 3600  # seconds
-
-
-def _list_actions_for_app(app_slug: str) -> List[Dict[str, Any]]:
-    ck = ("actions", app_slug)
-    hit = _cache.get(ck)
-    if hit and time.time() - hit["ts"] < _CACHE_TTL:
-        return hit["data"]
-
-    folder = _APP_SLUG_TO_GH.get(app_slug, app_slug)
-    url = f"{_GH_API}/{folder}/actions"
-    try:
-        dirs = _gh_get(url)
-    except Exception as e:
-        raise RuntimeError(f"No actions registry found for '{app_slug}' ({e})")
-
-    out: List[Dict[str, Any]] = []
-    for d in dirs:
-        if d.get("type") != "dir" or d["name"].startswith("common"):
-            continue
-        slug = d["name"]
-        # Try to fetch the .mjs (main file is usually `<slug>.mjs`)
-        try:
-            mjs = _gh_raw(f"{_GH_RAW}/{folder}/actions/{slug}/{slug}.mjs")
-        except Exception:
-            mjs = ""
-        meta = _parse_action_meta(mjs) if mjs else {}
-        out.append(
-            {
-                "key": meta.get("key") or f"{folder}-{slug}",
-                "slug": slug,
-                "app_slug": app_slug,
-                "name": meta.get("name") or _slug_to_title(slug),
-                "description": (meta.get("description") or "")[:200],
-                "version": meta.get("version", ""),
-            }
-        )
-
-    _cache[ck] = {"data": out, "ts": time.time()}
-    return out
-
-
-def _describe_action(action_key: str) -> Dict[str, Any]:
-    """
-    Resolve a full action schema.  Strategy:
-      key format is `<app_slug>-<action_slug>` (e.g. `github-create-issue`).
-      We try progressively longer app prefixes to find a matching GH folder.
-    """
-    ck = ("describe", action_key)
-    hit = _cache.get(ck)
-    if hit and time.time() - hit["ts"] < _CACHE_TTL:
-        return hit["data"]
-
-    parts = action_key.split("-")
-    # Try [1..N-1] splits — longest app-slug first so e.g. "slack_v2" wins over "slack"
-    candidates: List[tuple] = []
-    for i in range(len(parts) - 1, 0, -1):
-        app = "-".join(parts[:i])
-        act = "-".join(parts[i:])
-        candidates.append((app, act))
-        # Also try underscore variant
-        app_u = "_".join(parts[:i])
-        if app_u != app:
-            candidates.append((app_u, act))
-
-    last_err = None
-    for app_slug, action_slug in candidates:
-        folder = _APP_SLUG_TO_GH.get(app_slug, app_slug)
-        url = f"{_GH_RAW}/{folder}/actions/{action_slug}/{action_slug}.mjs"
-        try:
-            mjs = _gh_raw(url)
-            schema = _action_schema_from_mjs(app_slug, action_slug, mjs)
-            _cache[ck] = {"data": schema, "ts": time.time()}
-            return schema
-        except Exception as e:
-            last_err = e
-            continue
-
-    raise RuntimeError(
-        f"Could not resolve action '{action_key}' "
-        f"(tried {len(candidates)} app/action splits). Last error: {last_err}"
-    )
-
-
-# ─────────────────── OpenAI tool-schema generation ────────────────────
-
-
-def _props_to_json_schema(props: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    properties: Dict[str, Any] = {}
-    required: List[str] = []
-    for name, p in props.items():
-        entry: Dict[str, Any] = {"type": p.get("type", "string")}
-        if p.get("description"):
-            entry["description"] = p["description"]
-        elif p.get("label"):
-            entry["description"] = p["label"]
-        if "default" in p:
-            entry["default"] = p["default"]
-        if p.get("type") == "array":
-            entry["items"] = {"type": "string"}
-        properties[name] = entry
-        if p.get("required"):
-            required.append(name)
-    schema: Dict[str, Any] = {"type": "object", "properties": properties}
-    if required:
-        schema["required"] = required
-    return schema
-
-
-def _action_to_openai_tool(schema: Dict[str, Any]) -> Dict[str, Any]:
-    # tool name must be ^[a-zA-Z0-9_-]+$ and ≤ 64 chars
-    fn_name = schema["key"].replace(".", "_")[:64]
-    desc = schema.get("description") or schema.get("name") or schema["key"]
-    return {
-        "type": "function",
-        "function": {
-            "name": fn_name,
-            "description": desc[:1000],
-            "parameters": _props_to_json_schema(schema.get("props", {})),
-        },
-    }
-
-
-# ────────────────────────── subcommand impls ──────────────────────────
-
-
-def cmd_status(args: argparse.Namespace) -> None:
-    pd = _client()
-    _emit(
-        {
-            "ok": True,
-            "project_id": pd.project_id,
-            "environment": pd.environment,
-            "external_user_id": pd.external_user_id,
-        }
-    )
-
-
-def cmd_list(args: argparse.Namespace) -> None:
-    """List *connected* apps for the onboarded user."""
-    pd = _client()
-    try:
-        accounts = pd.list_accounts(limit=200)
-    except Exception as e:
-        _fail(f"list_accounts failed: {e}")
-
-    # Group by app_slug so the LLM sees one row per integration
-    grouped: Dict[str, Dict[str, Any]] = {}
-    for a in accounts:
-        slug = a.get("app_slug") or a.get("app", {}).get("name_slug") or "?"
-        if slug not in grouped:
-            grouped[slug] = {
-                "app_slug": slug,
-                "app_name": a.get("app_name") or a.get("app", {}).get("name") or slug,
-                "account_ids": [],
-                "healthy": True,
-                "has_registry": slug in _APP_SLUG_TO_GH,
-            }
-        grouped[slug]["account_ids"].append(a.get("id"))
-        if not a.get("healthy", True):
-            grouped[slug]["healthy"] = False
-
-    _emit({"ok": True, "count": len(grouped), "data": list(grouped.values())})
-
-
-def cmd_apps(args: argparse.Namespace) -> None:
-    pd = _client()
-    try:
-        apps = pd.list_apps(q=args.q, limit=args.limit)
-    except Exception as e:
-        _fail(f"list_apps failed: {e}")
-    slim = [
-        {
-            "slug": a.get("name_slug"),
-            "name": a.get("name"),
-            "description": a.get("description"),
-            "auth_type": a.get("auth_type"),
-            "categories": a.get("categories", []),
-            "has_registry": a.get("name_slug") in _APP_SLUG_TO_GH,
-        }
-        for a in apps
-    ]
-    _emit({"ok": True, "count": len(slim), "data": slim})
-
-
-def cmd_actions(args: argparse.Namespace) -> None:
-    try:
-        actions = _list_actions_for_app(args.app_slug)
-    except Exception as e:
-        _fail(str(e))
-    _emit(
-        {"ok": True, "app_slug": args.app_slug, "count": len(actions), "data": actions}
-    )
-
-
-def cmd_describe(args: argparse.Namespace) -> None:
-    try:
-        schema = _describe_action(args.action_key)
-    except Exception as e:
-        _fail(str(e))
-    _emit(schema)
-
-
-def _proxy_client():
-    """Lazily build a PipedreamProxyClient; fail-fast with a useful error."""
-    try:
-        from utils.pipedream_proxy import PipedreamProxyClient  # type: ignore
-    except Exception as e:
-        _fail(f"utils.pipedream_proxy not importable: {e}", exit_code=2)
-    try:
-        return PipedreamProxyClient()
-    except Exception as e:
-        _fail(
-            f"Pipedream proxy not configured: {e}",
-            exit_code=2,
-            hint="Run Ninja's Slack onboarding to install credentials, "
-            'or check ~/.agent_settings.json["pipedream"].',
-        )
-
-
-def _parse_kv_args(kv_list: Optional[List[str]], flag_name: str) -> Dict[str, str]:
-    """Parse repeated `--flag k=v` into a dict (string values)."""
-    out: Dict[str, str] = {}
-    for kv in kv_list or []:
-        if "=" not in kv:
-            _fail(f"{flag_name} expects k=v, got: {kv}", exit_code=1)
-        k, v = kv.split("=", 1)
-        out[k] = v
-    return out
-
-
-def _parse_header_args(hdr_list: Optional[List[str]]) -> Dict[str, str]:
-    """Parse repeated `--header K:V` (or `K=V`) into a dict."""
-    out: Dict[str, str] = {}
-    for h in hdr_list or []:
-        if ":" in h:
-            k, v = h.split(":", 1)
-        elif "=" in h:
-            k, v = h.split("=", 1)
-        else:
-            _fail(f"--header expects K:V, got: {h}", exit_code=1)
-        out[k.strip()] = v.strip()
-    return out
+# ---------------------------------------------------------------------------
+# Props arg parsing
+# ---------------------------------------------------------------------------
 
 
 def _collect_props(args: argparse.Namespace) -> Dict[str, Any]:
-    """Combine `--args <json>` and repeated `--arg k=v` flags."""
+    """Combine --args <json> and repeated --arg k=v flags."""
     configured: Dict[str, Any] = {}
     if getattr(args, "args_json", None):
         try:
@@ -609,244 +179,288 @@ def _collect_props(args: argparse.Namespace) -> Dict[str, Any]:
     return configured
 
 
-def cmd_http(args: argparse.Namespace) -> None:
-    """Send an authenticated upstream request via the Pipedream Connect Proxy.
+# ---------------------------------------------------------------------------
+# Subcommand handlers
+# ---------------------------------------------------------------------------
 
-    This works for any proxy-enabled app and any auth_type (oauth or keys).
-    """
-    px = _proxy_client()
 
-    # Resolve account_id (either explicit or via app_slug lookup)
-    account_id = getattr(args, "account_id", None)
-    if not account_id:
-        try:
-            account_id = px.find_account_id(args.app_slug)
-        except Exception as e:
-            _fail(f"could not resolve account: {e}", app_slug=args.app_slug)
+def _cmd_status(args: argparse.Namespace) -> None:
+    """Show resolved configuration."""
+    try:
+        user_id = _get_ninja_user_id()
+    except ValueError as exc:
+        _fail(str(exc), exit_code=2)
 
-    # Body: --json takes precedence, else --data is sent verbatim
+    try:
+        unique_channel = _get_unique_channel()
+    except ValueError as exc:
+        _fail(str(exc), exit_code=2)
+
+    cfg = get_config()
+    _ok(
+        {
+            "user_id": user_id,
+            "unique_channel": unique_channel,
+            "gateway": cfg.get("base_url", "(not configured)"),
+        }
+    )
+
+
+def _cmd_health(args: argparse.Namespace) -> None:
+    """Check the gateway health endpoint."""
+    try:
+        result = _client().check_health()
+    except PipedreamError as exc:
+        _fail(
+            f"Pipedream gateway returned HTTP {exc.status_code}: {exc.message}",
+            exit_code=3,
+        )
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
+
+    _ok(result)
+
+
+def _cmd_chat(args: argparse.Namespace) -> None:
+    """Send a message and return the final LLM response."""
+    model = args.model or get_config()["default_model"]
+    try:
+        pdx = _client()
+        response = pdx.chat_with_tools(
+            messages=[{"role": "user", "content": args.message}],
+            model=model,
+            event_id=args.event_id or None,
+        )
+    except ValueError as exc:
+        _fail(str(exc), exit_code=2)
+    except PipedreamError as exc:
+        _handle_pdx_error(exc)
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
+
+    _ok({"response": response})
+
+
+def _cmd_connect_link(args: argparse.Namespace) -> None:
+    """Get a short-lived OAuth connection link."""
+    try:
+        pdx = _client()
+        link = pdx.get_connection_link(
+            event_id=args.event_id or None,
+        )
+    except ValueError as exc:
+        _fail(str(exc), exit_code=2)
+    except PipedreamError as exc:
+        _handle_pdx_error(exc)
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
+
+    _ok({"link": link})
+
+
+def _cmd_list(args: argparse.Namespace) -> None:
+    """List connected apps for the onboarded user."""
+    try:
+        pdx = _client()
+        accounts = pdx.list_accounts()
+    except ValueError as exc:
+        _fail(str(exc), exit_code=2)
+    except PipedreamError as exc:
+        _handle_pdx_error(exc)
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
+
+    # Group by app_slug so the LLM sees one row per integration
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for a in accounts:
+        slug = a.get("app_slug") or "?"
+        if slug not in grouped:
+            grouped[slug] = {
+                "app_slug": slug,
+                "app_name": a.get("app_name") or slug,
+                "account_ids": [],
+                "healthy": True,
+                "has_registry": slug in APP_SLUG_TO_GH,
+            }
+        if a.get("id"):
+            grouped[slug]["account_ids"].append(a["id"])
+        if not a.get("healthy", True):
+            grouped[slug]["healthy"] = False
+
+    _ok({"count": len(grouped), "data": list(grouped.values())})
+
+
+def _cmd_apps(args: argparse.Namespace) -> None:
+    """Browse the Pipedream app catalog."""
+    try:
+        pdx = _client()
+        apps = pdx.list_apps(q=args.q or None, limit=args.limit)
+    except ValueError as exc:
+        _fail(str(exc), exit_code=2)
+    except PipedreamError as exc:
+        _handle_pdx_error(exc)
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
+
+    slim = [
+        {
+            "slug": a.get("name_slug"),
+            "name": a.get("name"),
+            "description": a.get("description"),
+            "auth_type": a.get("auth_type"),
+            "categories": a.get("categories", []),
+            "has_registry": a.get("name_slug") in APP_SLUG_TO_GH,
+        }
+        for a in apps
+    ]
+    _ok({"count": len(slim), "data": slim})
+
+
+def _cmd_actions(args: argparse.Namespace) -> None:
+    """List available actions for an app (from GitHub registry)."""
+    try:
+        actions = list_actions_for_app(args.app_slug)
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
+
+    _ok({"app_slug": args.app_slug, "count": len(actions), "data": actions})
+
+
+def _cmd_describe(args: argparse.Namespace) -> None:
+    """Show full JSON schema for a specific action."""
+    try:
+        schema = describe_action(args.action_key)
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
+
+    _ok(schema)
+
+
+def _cmd_run(args: argparse.Namespace) -> None:
+    """Execute a Pipedream action on behalf of the user."""
+    configured = _collect_props(args)
+    try:
+        pdx = _client()
+        result = pdx.run_action(
+            args.action_key,
+            props=configured,
+            event_id=args.event_id or None,
+        )
+    except ValueError as exc:
+        _fail(str(exc), exit_code=2)
+    except PipedreamError as exc:
+        _handle_pdx_error(exc)
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
+
+    _ok(
+        {
+            "action_key": args.action_key,
+            "configured_props": configured,
+            "result": result,
+        }
+    )
+
+
+def _cmd_http(args: argparse.Namespace) -> None:
+    """Send a raw authenticated HTTP request through the Pipedream proxy."""
+    # Body: --json takes precedence over --data
     json_body = None
-    body = None
+    raw_body = None
     if args.json_body:
         try:
             json_body = json.loads(args.json_body)
-        except json.JSONDecodeError as e:
-            _fail(f"invalid JSON in --json: {e}", exit_code=1)
+        except json.JSONDecodeError as exc:
+            _fail(f"invalid JSON in --json: {exc}", exit_code=1)
     elif args.data:
-        body = args.data
+        raw_body = args.data
 
-    headers = _parse_header_args(args.header)
-    query = _parse_kv_args(args.query, "--query")
+    # Parse --header K:V (repeatable)
+    extra_headers: dict[str, str] = {}
+    for h in args.header or []:
+        if ":" not in h:
+            _fail(f"invalid --header (expected 'K:V'): {h!r}", exit_code=1)
+        k, v = h.split(":", 1)
+        extra_headers[k.strip()] = v.strip()
+
+    # Parse --query k=v (repeatable)
+    query: dict[str, str] = {}
+    for q in args.query or []:
+        if "=" not in q:
+            _fail(f"invalid --query (expected 'k=v'): {q!r}", exit_code=1)
+        k, v = q.split("=", 1)
+        query[k.strip()] = v.strip()
 
     try:
-        resp = px.request(
-            args.method.upper(),
+        pdx = _client()
+        response = pdx.http_request(
+            args.app_slug,
+            args.method,
             args.url,
-            account_id=account_id,
             json_body=json_body,
-            body=body,
-            headers=headers,
-            query=query,
+            raw_body=raw_body,
+            extra_headers=extra_headers or None,
+            query=query or None,
+            event_id=args.event_id or None,
         )
-    except Exception as e:
-        _fail(
-            f"proxy request failed: {e}",
-            app_slug=args.app_slug,
-            account_id=account_id,
-            method=args.method,
-            url=args.url,
-        )
+    except ValueError as exc:
+        _fail(str(exc), exit_code=2)
+    except PipedreamError as exc:
+        _handle_pdx_error(exc)
+    except Exception as exc:
+        _fail(str(exc), exit_code=3)
 
-    _emit(
+    upstream_status = response.get("status", 0)
+    _ok(
         {
-            "ok": 200 <= resp.status < 300,
             "app_slug": args.app_slug,
-            "account_id": account_id,
             "request": {
                 "method": args.method.upper(),
                 "url": args.url,
-                "headers": headers,
+                "headers": extra_headers,
                 "query": query,
                 "json": json_body,
             },
-            "response": resp.to_envelope(),
+            "response": response,
+            "upstream_ok": 200 <= upstream_status < 300,
         }
     )
 
 
-def cmd_run(args: argparse.Namespace) -> None:
-    """Run a Pipedream action.
-
-    By default executes via the Connect Proxy using the curated
-    action map (works on the free Connect plan). Use
-    ``--via actions-api`` to fall back to the legacy ``actions.run``
-    SDK call (requires the paid Connect Components API).
-    """
-    configured = _collect_props(args)
-
-    if args.via == "actions-api":
-        # Legacy path: paid Connect Components API
-        pd = _client()
-        try:
-            result = pd.run_action(args.action_key, configured_props=configured)
-        except Exception as e:
-            _fail(
-                f"run_action failed: {e}",
-                action_key=args.action_key,
-                configured_props=configured,
-                via="actions-api",
-            )
-        _emit(
-            {
-                "ok": True,
-                "via": "actions-api",
-                "action_key": args.action_key,
-                "configured_props": configured,
-                "result": result,
-            }
-        )
-        return
-
-    # Proxy path (default)
-    try:
-        from utils.pdx_action_map import ActionRenderError  # type: ignore
-        from utils.pdx_action_map import list_supported_actions, render_request
-    except Exception as e:
-        _fail(f"utils.pdx_action_map not importable: {e}", exit_code=2)
-
-    try:
-        rendered = render_request(args.action_key, configured)
-    except KeyError:
-        _fail(
-            f"action {args.action_key!r} is not in the proxy action map",
-            exit_code=1,
-            action_key=args.action_key,
-            hint=(
-                "Use `pdx http <app_slug> <METHOD> <path-or-url>` instead, "
-                "or run `pdx run --via actions-api <key>` if your project "
-                "has the paid Connect Components API enabled."
-            ),
-            supported_actions=list_supported_actions(),
-        )
-    except ActionRenderError as e:
-        _fail(
-            str(e), exit_code=1, action_key=args.action_key, configured_props=configured
-        )
-
-    px = _proxy_client()
-    try:
-        account_id = px.find_account_id(rendered.app_slug)
-    except Exception as e:
-        _fail(
-            f"could not resolve account: {e}",
-            app_slug=rendered.app_slug,
-            action_key=args.action_key,
-        )
-
-    try:
-        resp = px.request(
-            rendered.method,
-            rendered.url,
-            account_id=account_id,
-            json_body=rendered.json_body,
-            headers=rendered.headers,
-            query=rendered.query,
-        )
-    except Exception as e:
-        _fail(
-            f"proxy request failed: {e}",
-            action_key=args.action_key,
-            app_slug=rendered.app_slug,
-            account_id=account_id,
-            method=rendered.method,
-            url=rendered.url,
-        )
-
-    _emit(
-        {
-            "ok": 200 <= resp.status < 300,
-            "via": "proxy",
-            "action_key": args.action_key,
-            "app_slug": rendered.app_slug,
-            "account_id": account_id,
-            "configured_props": configured,
-            "request": {
-                "method": rendered.method,
-                "url": rendered.url,
-                "headers": rendered.headers,
-                "query": rendered.query,
-                "json": rendered.json_body,
-            },
-            "response": resp.to_envelope(),
-        }
-    )
-
-
-def cmd_connect(args: argparse.Namespace) -> None:
-    pd = _client()
-    try:
-        tok = pd._pd.tokens.create(
-            external_user_id=pd.external_user_id,
-            expires_in=3600,
-        )
-    except Exception as e:
-        _fail(f"create_token failed: {e}")
-
-    link = getattr(tok, "connect_link_url", None)
-    if link and args.app_slug:
-        sep = "&" if "?" in link else "?"
-        link = f"{link}{sep}app={args.app_slug}"
-
-    _emit(
-        {
-            "ok": True,
-            "app_slug": args.app_slug,
-            "token": tok.token,
-            "connect_link_url": link,
-            "expires_at": str(tok.expires_at),
-            "external_user_id": pd.external_user_id,
-        }
-    )
-
-
-def cmd_tools(args: argparse.Namespace) -> None:
+def _cmd_tools(args: argparse.Namespace) -> None:
     """Emit OpenAI-style tool schema for every action of every connected app."""
-    pd = _client()
-
-    # Figure out which apps to include
+    # Determine which app slugs to include
     if args.apps:
         slugs = [s.strip() for s in args.apps.split(",") if s.strip()]
     else:
         try:
-            accounts = pd.list_accounts(limit=200)
-        except Exception as e:
-            _fail(f"list_accounts failed: {e}")
-        slugs = sorted(
-            {
-                a.get("app_slug") or a.get("app", {}).get("name_slug") or ""
-                for a in accounts
-            }
-            - {""}
-        )
+            pdx = _client()
+            accounts = pdx.list_accounts()
+        except ValueError as exc:
+            _fail(str(exc), exit_code=2)
+        except PipedreamError as exc:
+            _handle_pdx_error(exc)
+        except Exception as exc:
+            _fail(str(exc), exit_code=3)
+        slugs = sorted({a.get("app_slug") or "" for a in accounts} - {""})
 
     tools: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     for slug in slugs:
         try:
-            actions = _list_actions_for_app(slug)
+            actions = list_actions_for_app(slug)
         except Exception as e:
             errors.append({"app_slug": slug, "error": str(e)})
             continue
         for a in actions[: args.limit or 999]:
             try:
-                schema = _describe_action(a["key"])
-                tools.append(_action_to_openai_tool(schema))
+                schema = describe_action(a["key"])
+                tools.append(action_to_openai_tool(schema))
             except Exception as e:
                 errors.append({"action_key": a["key"], "error": str(e)})
 
-    _emit(
+    _ok(
         {
-            "ok": True,
             "apps": slugs,
             "count": len(tools),
             "tools": tools,
@@ -855,111 +469,216 @@ def cmd_tools(args: argparse.Namespace) -> None:
     )
 
 
-# ─────────────────────────────── main ─────────────────────────────────
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
         prog="pdx",
-        description="Ninja × Pipedream LLM CLI wrapper (JSON-first).",
+        description="Pipedream Connect CLI — routes through LiteLLM to the Pipedream Connect integrations gateway.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    sub.add_parser("status", help="Show project, environment, user_id.")
-
-    sub.add_parser("list", help="List *connected* integrations.")
-
-    sp = sub.add_parser("apps", help="Browse the Pipedream catalog.")
-    sp.add_argument("--q", "-q", help="Search query.")
-    sp.add_argument("--limit", "-n", type=int, default=50)
-
-    sp = sub.add_parser("actions", help="List actions for an app.")
-    sp.add_argument("app_slug")
-
-    sp = sub.add_parser("describe", help="Show schema for an action.")
-    sp.add_argument("action_key")
-
-    sp = sub.add_parser("run", help="Invoke an action.")
-    sp.add_argument("action_key")
-    sp.add_argument("--args", dest="args_json", help="JSON object of configured_props.")
-    sp.add_argument("--arg", action="append", help="Individual k=v pair (repeatable).")
-    sp.add_argument(
-        "--via",
-        choices=("proxy", "actions-api"),
-        default="proxy",
-        help="Execution path (default: proxy). 'actions-api' uses the paid "
-        "Pipedream Connect Components API and may be unavailable.",
+    # -- status --------------------------------------------------------------
+    sub.add_parser(
+        "status",
+        help="Show resolved user_id, unique_channel, and gateway URL.",
     )
 
-    sp = sub.add_parser(
+    # -- health --------------------------------------------------------------
+    sub.add_parser(
+        "health",
+        help="GET /ninja/integrations-gateway/health — no auth required.",
+    )
+
+    # -- chat ----------------------------------------------------------------
+    chat_p = sub.add_parser(
+        "chat",
+        help="Send a message; LiteLLM handles all tool calls and returns the final response.",
+    )
+    chat_p.add_argument("message", help="Natural-language message to send.")
+    chat_p.add_argument(
+        "--model",
+        default=None,
+        help="LiteLLM model alias (default: ANTHROPIC_MODEL from settings).",
+    )
+    chat_p.add_argument(
+        "--event-id",
+        dest="event_id",
+        default="",
+        help="x-ninja-event-id traceability header.",
+    )
+
+    # -- connect-link --------------------------------------------------------
+    link_p = sub.add_parser(
+        "connect-link",
+        help="Get a short-lived OAuth connection link for the user (expires 30 min).",
+    )
+    link_p.add_argument(
+        "--event-id",
+        dest="event_id",
+        default="",
+        help="x-ninja-event-id traceability header.",
+    )
+
+    # -- list ----------------------------------------------------------------
+    sub.add_parser(
+        "list",
+        help="List connected integrations for the user.",
+    )
+
+    # -- apps ----------------------------------------------------------------
+    apps_p = sub.add_parser(
+        "apps",
+        help="Browse the Pipedream app catalog.",
+    )
+    apps_p.add_argument("--q", "-q", default="", help="Search query.")
+    apps_p.add_argument(
+        "--limit", "-n", type=int, default=50, help="Max results (default 50)."
+    )
+
+    # -- actions -------------------------------------------------------------
+    actions_p = sub.add_parser(
+        "actions",
+        help="List available actions for an app (from GitHub registry).",
+    )
+    actions_p.add_argument("app_slug", help="App slug (e.g. 'github', 'gmail').")
+
+    # -- describe ------------------------------------------------------------
+    describe_p = sub.add_parser(
+        "describe",
+        help="Show full JSON schema for a specific action.",
+    )
+    describe_p.add_argument(
+        "action_key", help="Action key (e.g. 'github-create-issue')."
+    )
+
+    # -- run -----------------------------------------------------------------
+    run_p = sub.add_parser(
+        "run",
+        help="Execute a Pipedream action on behalf of the user.",
+    )
+    run_p.add_argument("action_key", help="Action key (e.g. 'github-create-issue').")
+    run_p.add_argument(
+        "--args",
+        dest="args_json",
+        default="",
+        help='JSON object of action props (e.g. \'{"title": "Bug fix"}\').',
+    )
+    run_p.add_argument(
+        "--arg",
+        action="append",
+        default=[],
+        help="Individual prop in k=v form (repeatable). Values are JSON-parsed if valid.",
+    )
+    run_p.add_argument(
+        "--event-id",
+        dest="event_id",
+        default="",
+        help="x-ninja-event-id traceability header.",
+    )
+
+    # -- http ----------------------------------------------------------------
+    http_p = sub.add_parser(
         "http",
-        help="Send an authenticated upstream request via the Pipedream Connect Proxy.",
+        help="Send a raw authenticated HTTP request through the Pipedream proxy (no LLM).",
     )
-    sp.add_argument("app_slug", help="Pipedream app slug (e.g. 'gmail').")
-    sp.add_argument("method", help="HTTP method (GET, POST, PUT, PATCH, DELETE).")
-    sp.add_argument("url", help="Upstream URL or relative path (e.g. '/v1/users/me').")
-    sp.add_argument(
-        "--json", dest="json_body", help="JSON body (string of valid JSON)."
+    http_p.add_argument("app_slug", help="App slug (e.g. 'github', 'gmail').")
+    http_p.add_argument("method", help="HTTP method (GET, POST, PUT, PATCH, DELETE).")
+    http_p.add_argument(
+        "url", help="Upstream URL (e.g. 'https://api.github.com/user')."
     )
-    sp.add_argument("--data", help="Raw body string (mutually exclusive with --json).")
-    sp.add_argument(
+    http_p.add_argument(
+        "--json",
+        dest="json_body",
+        default="",
+        help="JSON body as a string (mutually exclusive with --data).",
+    )
+    http_p.add_argument(
+        "--data",
+        default="",
+        help="Raw body string (mutually exclusive with --json).",
+    )
+    http_p.add_argument(
         "--header",
         action="append",
         default=[],
-        help="Request header in 'K:V' form (repeatable).",
+        help="Extra header to forward upstream in 'K:V' form (repeatable).",
     )
-    sp.add_argument(
+    http_p.add_argument(
         "--query",
         action="append",
         default=[],
         help="Query string parameter in 'k=v' form (repeatable).",
     )
-    sp.add_argument(
-        "--account-id",
-        dest="account_id",
-        help="Override account_id (default: auto-resolve via app_slug).",
+    http_p.add_argument(
+        "--event-id",
+        dest="event_id",
+        default="",
+        help="x-ninja-event-id traceability header.",
     )
 
-    sp = sub.add_parser("connect", help="Get OAuth link to connect an app.")
-    sp.add_argument("app_slug", nargs="?", default=None)
-
-    sp = sub.add_parser(
-        "tools", help="Emit OpenAI-style tool schema for all connected apps."
+    # -- tools ---------------------------------------------------------------
+    tools_p = sub.add_parser(
+        "tools",
+        help="Emit OpenAI-style tool schema for all connected apps.",
     )
-    sp.add_argument(
-        "--apps", help="Comma-separated app slugs (default: all connected)."
+    tools_p.add_argument(
+        "--apps",
+        default="",
+        help="Comma-separated app slugs to include (default: all connected).",
     )
-    sp.add_argument(
-        "--limit", type=int, default=0, help="Max actions per app (0 = no limit)."
+    tools_p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Max actions per app (default: 0 = no limit).",
     )
 
-    return p
+    return parser
 
 
-_DISPATCH = {
-    "status": cmd_status,
-    "list": cmd_list,
-    "apps": cmd_apps,
-    "actions": cmd_actions,
-    "describe": cmd_describe,
-    "run": cmd_run,
-    "http": cmd_http,
-    "connect": cmd_connect,
-    "tools": cmd_tools,
-}
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
-def main(argv: Optional[List[str]] = None) -> None:
-    args = build_parser().parse_args(argv)
-    fn = _DISPATCH.get(args.cmd)
-    if not fn:
-        _fail(f"unknown command: {args.cmd}", exit_code=1)
-    try:
-        fn(args)
-    except SystemExit:
-        raise
-    except Exception as e:
-        _fail(f"unhandled error: {e}", exit_code=3)
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "status":
+        _cmd_status(args)
+    elif args.command == "health":
+        _cmd_health(args)
+    elif args.command == "chat":
+        _cmd_chat(args)
+    elif args.command == "connect-link":
+        _cmd_connect_link(args)
+    elif args.command == "list":
+        _cmd_list(args)
+    elif args.command == "apps":
+        _cmd_apps(args)
+    elif args.command == "actions":
+        _cmd_actions(args)
+    elif args.command == "describe":
+        _cmd_describe(args)
+    elif args.command == "run":
+        _cmd_run(args)
+    elif args.command == "http":
+        _cmd_http(args)
+    elif args.command == "tools":
+        _cmd_tools(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

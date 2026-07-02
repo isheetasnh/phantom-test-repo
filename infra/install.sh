@@ -8,15 +8,12 @@
 #
 # What this does:
 #   1.   Installs Python dependencies (requirements.txt)
-#   1.5. Installs pdx CLI
+#   1.5. Installs pdx CLI (Pipedream Connect wrapper)
 #   2.   Creates the logs directory + writes MESSAGING_CHANNEL to /etc/environment
 #   3.   Runs channel-specific setup (install/<channel>.sh)
 #   4.   Installs and enables systemd services
 #   5.   Configures VNC (removes password)
 #   6.   Waits for browser server to be ready
-#
-# Prerequisites (must be provided manually — not handled by this script):
-#   - s3_config.json at repo root or /root/  (AWS credentials for S3 cache)
 
 set -euo pipefail
 
@@ -88,7 +85,7 @@ export PYTHONPATH="${NINJA_PARENT}:${PYTHONPATH:-}"
 echo "  ✓ PYTHONPATH configured (${NINJA_PARENT})"
 
 # ---------------------------------------------------------------------------
-# Step 1.5: Install pdx CLI (Pipedream LLM wrapper)
+# Step 1.5: Install pdx CLI (Pipedream Connect wrapper)
 # ---------------------------------------------------------------------------
 PDX_SRC="$SCRIPT_DIR/bin/pdx"
 PDX_DST="/usr/local/bin/pdx"
